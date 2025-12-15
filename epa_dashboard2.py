@@ -1536,15 +1536,21 @@ if __name__ == "__main__":
 
     # Get the directory where this script is located
     BASE_DIR = Path(__file__).parent
-    DATA_PATH = BASE_DIR / 'Data' / 'daily_88101_2024_cleaned.csv'
 
-    # Fallback to string path for DuckDB compatibility
-    DATA_PATH = str(DATA_PATH)
+    # Try parquet first (smaller, faster), fallback to CSV
+    DATA_PATH_PARQUET = BASE_DIR / 'Data' / 'daily_88101_2024_cleaned.parquet'
+    DATA_PATH_CSV = BASE_DIR / 'Data' / 'daily_88101_2024_cleaned.csv'
 
-    # Verify data file exists
-    if not os.path.exists(DATA_PATH):
-        st.error(f"❌ Datendatei nicht gefunden: {DATA_PATH}")
-        st.info("Bitte stellen Sie sicher, dass 'Data/daily_88101_2024_cleaned.csv' vorhanden ist.")
+    if os.path.exists(str(DATA_PATH_PARQUET)):
+        DATA_PATH = str(DATA_PATH_PARQUET)
+        print(f"✅ Using Parquet file: {DATA_PATH}")
+    elif os.path.exists(str(DATA_PATH_CSV)):
+        DATA_PATH = str(DATA_PATH_CSV)
+        print(f"✅ Using CSV file: {DATA_PATH}")
+    else:
+        st.error(f"❌ Datendatei nicht gefunden!")
+        st.info("Gesuchte Dateien:")
+        st.code(f"- {DATA_PATH_PARQUET}\n- {DATA_PATH_CSV}")
         st.stop()
 
     # Run dashboard
