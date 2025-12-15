@@ -1,0 +1,67 @@
+================================================================================
+EPA DATA CLEANUP REPORT
+Generated: 2025-12-14 22:41:02
+================================================================================
+
+CONFIGURATION:
+----------------------------------------
+  aqi_max: 500
+  pm25_min: 0.0
+  pm25_extreme_threshold: 150.0
+  observation_percent_min: 75.0
+  null_aqi_strategy: calculate
+  fix_negative_pm25: True
+  cap_extreme_aqi: True
+  show_examples: True
+  example_limit: 10
+  verbose: True
+  export_format: both
+  include_cleanup_flags: True
+
+
+STATISTICS BEFORE:
+----------------------------------------
+  total_rows: 738478
+  null_state: 0.0
+  null_pm25: 0.0
+  null_aqi: 341757.0
+  null_standard: 341757.0
+  null_site: 22694.0
+  negative_pm25: 2755.0
+  extreme_pm25: 24.0
+  negative_aqi: 0.0
+  extreme_aqi: 2.0
+  unreliable_obs: 2148.0
+  low_quality_obs: 2554.0
+  acceptable_obs: 4565.0
+  high_quality_obs: 729211.0
+  avg_pm25: 7.11
+  median_pm25: 6.04
+  min_pm25: -7.06
+  max_pm25: 833.84
+  avg_aqi: 35.66
+  median_aqi: 34.0
+  min_aqi: 0
+  max_aqi: 1513
+  earliest_date: 2024-01-01 00:00:00
+  latest_date: 2024-12-31 00:00:00
+  unique_states: 53
+  unique_counties: 529
+
+
+STATISTICS AFTER:
+----------------------------------------
+  total_rows: 738478
+  null_pm25: 0.0
+  null_aqi: 0.0
+  negative_pm25: 0.0
+  negative_aqi: 0.0
+  extreme_aqi: 0.0
+  avg_pm25: 7.11
+  median_pm25: 6.04
+  min_pm25: 0.0
+  max_pm25: 833.84
+  avg_aqi: 32.26
+  median_aqi: 29.0
+  min_aqi: 0.0
+  max_aqi: 500.0

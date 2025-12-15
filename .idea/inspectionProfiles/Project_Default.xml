@@ -1,0 +1,19 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="tensorflow" />
+          <option value="numpy" />
+          <option value="keras" />
+          <option value="google-generativeai" />
+          <option value="python-dotenv" />
+          <option value="flask" />
+          <option value="flask-cors" />
+          <option value="gunicorn" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>

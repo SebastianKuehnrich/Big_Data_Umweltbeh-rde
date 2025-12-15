@@ -1,0 +1,97 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.virtualenv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Old/Development files (not for deployment)
+main.py
+epa_dashboard.py
+
+# Large data files (keep only cleaned versions)
+Data/daily_88101_2024.csv
+
+# Backup files
+*.bak
+*.tmp
+*.temp
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Documentation temporary files
+*.md~
+*.txt~
+
+# Railway specific
+.railway/
+
+# Git
+*.orig
+
