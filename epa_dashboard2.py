@@ -1,6 +1,7 @@
 # =============================================================================
 # EPA AIR QUALITY DASHBOARD v2.0 - PROFESSIONAL EDITION
 # Author: Sebastian Kühnrich
+# Updated for pre-cleaned data structure
 # =============================================================================
 
 import streamlit as st
@@ -84,6 +85,30 @@ class AQICategory(Enum):
 
 
 # =============================================================================
+# COLUMN CONFIGURATION FOR PRE-CLEANED DATA
+# =============================================================================
+
+# Actual column names in the cleaned dataset
+COLUMN_NAMES = {
+    'PM25': 'pm25_cleaned',
+    'AQI': 'aqi_cleaned',
+    'PM25_ORIGINAL': 'pm25_original',
+    'AQI_ORIGINAL': 'aqi_original',
+    'STATE': 'State Name',
+    'COUNTY': 'County Name',
+    'DATE': 'Date Local',
+    'SITE': 'Local Site Name',
+    'LAT': 'Latitude',
+    'LON': 'Longitude',
+    'DURATION': 'Sample Duration',
+    'STANDARD': 'Pollutant Standard',
+    'PERCENT': 'Observation Percent',
+    'QUALITY_FLAG': 'data_quality_flag',
+    'CLEANUP': 'cleanup_action'
+}
+
+
+# =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
 
@@ -102,43 +127,15 @@ class QueryBuilder:
 
         if states and "All States" not in states:
             state_list = "', '".join(states)
-            conditions.append(f'"State Name" IN (\'{state_list}\')')
+            conditions.append(f'"{COLUMN_NAMES["STATE"]}" IN (\'{state_list}\')')
 
-        conditions.append(f'"Date Local" >= \'{date_from}\'')
-        conditions.append(f'"Date Local" <= \'{date_to}\'')
+        conditions.append(f'"{COLUMN_NAMES["DATE"]}" >= \'{date_from}\'')
+        conditions.append(f'"{COLUMN_NAMES["DATE"]}" <= \'{date_to}\'')
 
         if additional_conditions:
             conditions.extend(additional_conditions)
 
         return "WHERE " + " AND ".join(conditions) if conditions else ""
-
-    @staticmethod
-    def create_cleanup_cte(table: str, where_clause: str = "") -> str:
-        """Create CTE for data cleanup."""
-        return f"""
-        WITH cleaned_data AS (
-            SELECT
-                *,
-                GREATEST(COALESCE("Arithmetic Mean", 0), 0) as pm25_cleaned,
-                LEAST(
-                    GREATEST(
-                        COALESCE(
-                            "AQI",
-                            CASE
-                                WHEN "Arithmetic Mean" <= 12.0 THEN "Arithmetic Mean" * 50.0 / 12.0
-                                WHEN "Arithmetic Mean" <= 35.4 THEN 50 + ("Arithmetic Mean" - 12.0) * 49.0 / 23.4
-                                WHEN "Arithmetic Mean" <= 55.4 THEN 100 + ("Arithmetic Mean" - 35.4) * 49.0 / 20.0
-                                WHEN "Arithmetic Mean" <= 150.4 THEN 150 + ("Arithmetic Mean" - 55.4) * 49.0 / 95.0
-                                WHEN "Arithmetic Mean" <= 250.4 THEN 200 + ("Arithmetic Mean" - 150.4) * 99.0 / 100.0
-                                ELSE 300 + ("Arithmetic Mean" - 250.4) * 199.0 / 250.0
-                            END
-                        ), 0
-                    ), 500
-                ) as aqi_cleaned
-            FROM {table}
-            {where_clause}
-        )
-        """
 
 
 class AnomalyDetector:
@@ -197,7 +194,7 @@ def calculate_trend(data: pd.Series) -> Tuple[float, str]:
 
 
 # =============================================================================
-# DATA LOADER
+# DATA LOADER FOR PRE-CLEANED DATA
 # =============================================================================
 
 class DataLoader:
@@ -220,44 +217,22 @@ class DataLoader:
 
     @st.cache_data(ttl=3600)
     def get_kpi_metrics(_self) -> Dict[str, Any]:
-        """Get KPI metrics with caching."""
+        """Get KPI metrics from pre-cleaned data."""
         query = f"""
-        WITH cleaned_data AS (
-            SELECT
-                GREATEST(COALESCE("Arithmetic Mean", 0), 0) as pm25_cleaned,
-                LEAST(
-                    GREATEST(
-                        COALESCE(
-                            "AQI",
-                            CASE
-                                WHEN "Arithmetic Mean" <= 12.0 THEN "Arithmetic Mean" * 50.0 / 12.0
-                                WHEN "Arithmetic Mean" <= 35.4 THEN 50 + ("Arithmetic Mean" - 12.0) * 49.0 / 23.4
-                                WHEN "Arithmetic Mean" <= 55.4 THEN 100 + ("Arithmetic Mean" - 35.4) * 49.0 / 20.0
-                                WHEN "Arithmetic Mean" <= 150.4 THEN 150 + ("Arithmetic Mean" - 55.4) * 49.0 / 95.0
-                                WHEN "Arithmetic Mean" <= 250.4 THEN 200 + ("Arithmetic Mean" - 150.4) * 99.0 / 100.0
-                                ELSE 300 + ("Arithmetic Mean" - 250.4) * 199.0 / 250.0
-                            END
-                        ), 0
-                    ), 500
-                ) as aqi_cleaned,
-                "State Name",
-                "Date Local",
-                "Arithmetic Mean",
-                "AQI"
-            FROM '{_self.data_path}'
-        )
         SELECT
             COUNT(*) as total_rows,
-            COUNT(DISTINCT "State Name") as unique_states,
-            SUM(CASE WHEN "Arithmetic Mean" < 0 THEN 1 ELSE 0 END) as negative_fixed,
-            ROUND(AVG(pm25_cleaned), 2) as avg_pm25,
-            ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pm25_cleaned), 2) as median_pm25,
-            ROUND(STDDEV(pm25_cleaned), 2) as std_pm25,
-            SUM(CASE WHEN "AQI" IS NULL THEN 1 ELSE 0 END) as null_aqi_fixed,
-            SUM(CASE WHEN "AQI" > 500 THEN 1 ELSE 0 END) as extreme_aqi_capped,
-            MIN("Date Local") as date_start,
-            MAX("Date Local") as date_end
-        FROM cleaned_data
+            COUNT(DISTINCT "{COLUMN_NAMES['STATE']}") as unique_states,
+            ROUND(AVG({COLUMN_NAMES['PM25']}), 2) as avg_pm25,
+            ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {COLUMN_NAMES['PM25']}), 2) as median_pm25,
+            ROUND(STDDEV({COLUMN_NAMES['PM25']}), 2) as std_pm25,
+            ROUND(AVG({COLUMN_NAMES['AQI']}), 1) as avg_aqi,
+            SUM(CASE WHEN {COLUMN_NAMES['PM25_ORIGINAL']} < 0 THEN 1 ELSE 0 END) as negative_fixed,
+            SUM(CASE WHEN {COLUMN_NAMES['AQI_ORIGINAL']} IS NULL THEN 1 ELSE 0 END) as null_aqi_fixed,
+            SUM(CASE WHEN {COLUMN_NAMES['AQI']} > 500 THEN 1 ELSE 0 END) as extreme_aqi_capped,
+            MIN("{COLUMN_NAMES['DATE']}") as date_start,
+            MAX("{COLUMN_NAMES['DATE']}") as date_end,
+            SUM(CASE WHEN {COLUMN_NAMES['QUALITY_FLAG']} = 'cleaned' THEN 1 ELSE 0 END) as cleaned_records
+        FROM '{_self.data_path}'
         """
 
         try:
@@ -269,7 +244,7 @@ class DataLoader:
 
     @st.cache_data(ttl=3600)
     def get_monthly_trends(_self, filter_state: FilterState) -> pd.DataFrame:
-        """Get monthly trends with advanced analytics."""
+        """Get monthly trends from pre-cleaned data."""
         where_clause = _self.query_builder.build_where_clause(
             filter_state.selected_states,
             filter_state.date_from,
@@ -277,42 +252,20 @@ class DataLoader:
         )
 
         query = f"""
-        WITH cleaned_data AS (
-            SELECT
-                STRFTIME("Date Local"::DATE, '%Y-%m') as month,
-                "State Name",
-                GREATEST(COALESCE("Arithmetic Mean", 0), 0) as pm25_cleaned,
-                LEAST(
-                    GREATEST(
-                        COALESCE(
-                            "AQI",
-                            CASE
-                                WHEN "Arithmetic Mean" <= 12.0 THEN "Arithmetic Mean" * 50.0 / 12.0
-                                WHEN "Arithmetic Mean" <= 35.4 THEN 50 + ("Arithmetic Mean" - 12.0) * 49.0 / 23.4
-                                WHEN "Arithmetic Mean" <= 55.4 THEN 100 + ("Arithmetic Mean" - 35.4) * 49.0 / 20.0
-                                WHEN "Arithmetic Mean" <= 150.4 THEN 150 + ("Arithmetic Mean" - 55.4) * 49.0 / 95.0
-                                WHEN "Arithmetic Mean" <= 250.4 THEN 200 + ("Arithmetic Mean" - 150.4) * 99.0 / 100.0
-                                ELSE 300 + ("Arithmetic Mean" - 250.4) * 199.0 / 250.0
-                            END
-                        ), 0
-                    ), 500
-                ) as aqi_cleaned
-            FROM '{_self.data_path}'
-            {where_clause}
-        )
         SELECT
-            month,
-            {'"State Name",' if filter_state.comparison_mode else ''}
-            ROUND(AVG(pm25_cleaned), 2) as avg_pm25,
-            ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY pm25_cleaned), 2) as q1_pm25,
-            ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pm25_cleaned), 2) as median_pm25,
-            ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY pm25_cleaned), 2) as q3_pm25,
-            ROUND(AVG(aqi_cleaned), 1) as avg_aqi,
-            SUM(CASE WHEN aqi_cleaned > 100 THEN 1 ELSE 0 END) as unhealthy_days,
+            STRFTIME("{COLUMN_NAMES['DATE']}"::DATE, '%Y-%m') as month,
+            {'"' + COLUMN_NAMES['STATE'] + '",' if filter_state.comparison_mode else ''}
+            ROUND(AVG({COLUMN_NAMES['PM25']}), 2) as avg_pm25,
+            ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {COLUMN_NAMES['PM25']}), 2) as q1_pm25,
+            ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {COLUMN_NAMES['PM25']}), 2) as median_pm25,
+            ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {COLUMN_NAMES['PM25']}), 2) as q3_pm25,
+            ROUND(AVG({COLUMN_NAMES['AQI']}), 1) as avg_aqi,
+            SUM(CASE WHEN {COLUMN_NAMES['AQI']} > 100 THEN 1 ELSE 0 END) as unhealthy_days,
             COUNT(*) as measurements,
-            ROUND(STDDEV(pm25_cleaned), 2) as std_pm25
-        FROM cleaned_data
-        GROUP BY month {', "State Name"' if filter_state.comparison_mode else ''}
+            ROUND(STDDEV({COLUMN_NAMES['PM25']}), 2) as std_pm25
+        FROM '{_self.data_path}'
+        {where_clause}
+        GROUP BY month {', "' + COLUMN_NAMES['STATE'] + '"' if filter_state.comparison_mode else ''}
         ORDER BY month
         """
 
@@ -324,7 +277,7 @@ class DataLoader:
 
     @st.cache_data(ttl=3600)
     def get_state_comparison(_self, filter_state: FilterState) -> pd.DataFrame:
-        """Get state-by-state comparison."""
+        """Get state-by-state comparison from pre-cleaned data."""
         where_clause = _self.query_builder.build_where_clause(
             filter_state.selected_states,
             filter_state.date_from,
@@ -332,40 +285,21 @@ class DataLoader:
         )
 
         query = f"""
-        WITH cleaned_data AS (
-            SELECT
-                "State Name",
-                "County Name",
-                GREATEST(COALESCE("Arithmetic Mean", 0), 0) as pm25_cleaned,
-                LEAST(
-                    GREATEST(
-                        COALESCE(
-                            "AQI",
-                            CASE
-                                WHEN "Arithmetic Mean" <= 12.0 THEN "Arithmetic Mean" * 50.0 / 12.0
-                                WHEN "Arithmetic Mean" <= 35.4 THEN 50 + ("Arithmetic Mean" - 12.0) * 49.0 / 23.4
-                                ELSE 100
-                            END
-                        ), 0
-                    ), 500
-                ) as aqi_cleaned
-            FROM '{_self.data_path}'
-            {where_clause}
-        )
         SELECT
-            "State Name",
-            COUNT(DISTINCT "County Name") as counties,
+            "{COLUMN_NAMES['STATE']}" as "State Name",
+            COUNT(DISTINCT "{COLUMN_NAMES['COUNTY']}") as counties,
             COUNT(*) as measurements,
-            ROUND(AVG(pm25_cleaned), 2) as avg_pm25,
-            ROUND(MAX(pm25_cleaned), 2) as max_pm25,
-            ROUND(MIN(pm25_cleaned), 2) as min_pm25,
-            ROUND(AVG(aqi_cleaned), 1) as avg_aqi,
-            SUM(CASE WHEN aqi_cleaned <= 50 THEN 1 ELSE 0 END) as good_days,
-            SUM(CASE WHEN aqi_cleaned > 50 AND aqi_cleaned <= 100 THEN 1 ELSE 0 END) as moderate_days,
-            SUM(CASE WHEN aqi_cleaned > 100 THEN 1 ELSE 0 END) as unhealthy_days,
-            ROUND(100.0 * SUM(CASE WHEN aqi_cleaned <= 50 THEN 1 ELSE 0 END) / COUNT(*), 1) as pct_good_days
-        FROM cleaned_data
-        GROUP BY "State Name"
+            ROUND(AVG({COLUMN_NAMES['PM25']}), 2) as avg_pm25,
+            ROUND(MAX({COLUMN_NAMES['PM25']}), 2) as max_pm25,
+            ROUND(MIN({COLUMN_NAMES['PM25']}), 2) as min_pm25,
+            ROUND(AVG({COLUMN_NAMES['AQI']}), 1) as avg_aqi,
+            SUM(CASE WHEN {COLUMN_NAMES['AQI']} <= 50 THEN 1 ELSE 0 END) as good_days,
+            SUM(CASE WHEN {COLUMN_NAMES['AQI']} > 50 AND {COLUMN_NAMES['AQI']} <= 100 THEN 1 ELSE 0 END) as moderate_days,
+            SUM(CASE WHEN {COLUMN_NAMES['AQI']} > 100 THEN 1 ELSE 0 END) as unhealthy_days,
+            ROUND(100.0 * SUM(CASE WHEN {COLUMN_NAMES['AQI']} <= 50 THEN 1 ELSE 0 END) / COUNT(*), 1) as pct_good_days
+        FROM '{_self.data_path}'
+        {where_clause}
+        GROUP BY "{COLUMN_NAMES['STATE']}"
         ORDER BY avg_pm25 DESC
         """
 
@@ -377,15 +311,15 @@ class DataLoader:
 
     @st.cache_data(ttl=3600)
     def get_data_quality_metrics(_self) -> DataQualityMetrics:
-        """Analyze data quality."""
+        """Analyze data quality from pre-cleaned data."""
         query = f"""
         SELECT
             COUNT(*) as total_records,
-            SUM(CASE WHEN "Arithmetic Mean" IS NULL THEN 1 ELSE 0 END) as null_count,
-            SUM(CASE WHEN "Arithmetic Mean" < 0 THEN 1 ELSE 0 END) as negative_count,
-            SUM(CASE WHEN ABS("Arithmetic Mean" - avg_val) > 3 * std_val THEN 1 ELSE 0 END) as outlier_count
+            SUM(CASE WHEN {COLUMN_NAMES['PM25']} IS NULL THEN 1 ELSE 0 END) as null_count,
+            SUM(CASE WHEN {COLUMN_NAMES['PM25_ORIGINAL']} < 0 THEN 1 ELSE 0 END) as negative_count,
+            SUM(CASE WHEN ABS({COLUMN_NAMES['PM25']} - avg_val) > 3 * std_val THEN 1 ELSE 0 END) as outlier_count
         FROM '{_self.data_path}',
-        (SELECT AVG("Arithmetic Mean") as avg_val, STDDEV("Arithmetic Mean") as std_val FROM '{_self.data_path}')
+        (SELECT AVG({COLUMN_NAMES['PM25']}) as avg_val, STDDEV({COLUMN_NAMES['PM25']}) as std_val FROM '{_self.data_path}')
         """
 
         try:
@@ -407,15 +341,15 @@ class DataLoader:
     def get_states_list(_self) -> List[str]:
         """Get list of all available states."""
         query = f"""
-        SELECT DISTINCT "State Name"
+        SELECT DISTINCT "{COLUMN_NAMES['STATE']}"
         FROM '{_self.data_path}'
-        WHERE "State Name" IS NOT NULL
-        ORDER BY "State Name"
+        WHERE "{COLUMN_NAMES['STATE']}" IS NOT NULL
+        ORDER BY "{COLUMN_NAMES['STATE']}"
         """
 
         try:
             result = _self.connection.execute(query).fetchdf()
-            return result['State Name'].tolist()
+            return result[COLUMN_NAMES['STATE']].tolist()
         except Exception as e:
             st.error(f"Failed to get states list: {e}")
             return []
@@ -443,36 +377,20 @@ class DataLoader:
 
     @st.cache_data(ttl=3600)
     def get_aqi_distribution(_self, where_clause: str) -> pd.DataFrame:
-        """Get AQI category distribution."""
+        """Get AQI category distribution from pre-cleaned data."""
         query = f"""
-        WITH cleaned_data AS (
-            SELECT
-                LEAST(
-                    GREATEST(
-                        COALESCE(
-                            "AQI",
-                            CASE
-                                WHEN "Arithmetic Mean" <= 12.0 THEN "Arithmetic Mean" * 50.0 / 12.0
-                                WHEN "Arithmetic Mean" <= 35.4 THEN 50 + ("Arithmetic Mean" - 12.0) * 49.0 / 23.4
-                                ELSE 100
-                            END
-                        ), 0
-                    ), 500
-                ) as aqi_cleaned
-            FROM '{_self.data_path}'
-            {where_clause}
-        )
         SELECT
             CASE
-                WHEN aqi_cleaned <= 50 THEN '1. Good (0-50)'
-                WHEN aqi_cleaned <= 100 THEN '2. Moderate (51-100)'
-                WHEN aqi_cleaned <= 150 THEN '3. Unhealthy Sensitive (101-150)'
-                WHEN aqi_cleaned <= 200 THEN '4. Unhealthy (151-200)'
-                WHEN aqi_cleaned <= 300 THEN '5. Very Unhealthy (201-300)'
+                WHEN {COLUMN_NAMES['AQI']} <= 50 THEN '1. Good (0-50)'
+                WHEN {COLUMN_NAMES['AQI']} <= 100 THEN '2. Moderate (51-100)'
+                WHEN {COLUMN_NAMES['AQI']} <= 150 THEN '3. Unhealthy Sensitive (101-150)'
+                WHEN {COLUMN_NAMES['AQI']} <= 200 THEN '4. Unhealthy (151-200)'
+                WHEN {COLUMN_NAMES['AQI']} <= 300 THEN '5. Very Unhealthy (201-300)'
                 ELSE '6. Hazardous (301-500)'
             END as category,
             COUNT(*) as count
-        FROM cleaned_data
+        FROM '{_self.data_path}'
+        {where_clause}
         GROUP BY category
         ORDER BY category
         """
@@ -480,6 +398,39 @@ class DataLoader:
         try:
             return _self.connection.execute(query).fetchdf()
         except:
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_site_analysis(_self, filter_state: FilterState) -> pd.DataFrame:
+        """Get analysis by monitoring sites."""
+        where_clause = _self.query_builder.build_where_clause(
+            filter_state.selected_states,
+            filter_state.date_from,
+            filter_state.date_to
+        )
+
+        query = f"""
+        SELECT
+            "{COLUMN_NAMES['SITE']}" as site_name,
+            "{COLUMN_NAMES['STATE']}" as state,
+            "{COLUMN_NAMES['COUNTY']}" as county,
+            ROUND(AVG({COLUMN_NAMES['LAT']}), 4) as latitude,
+            ROUND(AVG({COLUMN_NAMES['LON']}), 4) as longitude,
+            COUNT(*) as measurements,
+            ROUND(AVG({COLUMN_NAMES['PM25']}), 2) as avg_pm25,
+            ROUND(AVG({COLUMN_NAMES['AQI']}), 1) as avg_aqi,
+            ROUND(AVG({COLUMN_NAMES['PERCENT']}), 1) as avg_observation_pct
+        FROM '{_self.data_path}'
+        {where_clause}
+        GROUP BY "{COLUMN_NAMES['SITE']}", "{COLUMN_NAMES['STATE']}", "{COLUMN_NAMES['COUNTY']}"
+        ORDER BY avg_pm25 DESC
+        LIMIT 20
+        """
+
+        try:
+            return _self.connection.execute(query).fetchdf()
+        except Exception as e:
+            st.error(f"Failed to get site analysis: {e}")
             return pd.DataFrame()
 
 
@@ -679,6 +630,33 @@ class Visualizations:
         fig.update_layout(height=250)
         return fig
 
+    def create_site_map(self, df: pd.DataFrame) -> go.Figure:
+        """Create map visualization of monitoring sites."""
+        if df.empty or 'latitude' not in df.columns:
+            return go.Figure()
+
+        fig = px.scatter_mapbox(
+            df,
+            lat='latitude',
+            lon='longitude',
+            size='avg_pm25',
+            color='avg_aqi',
+            hover_name='site_name',
+            hover_data=['state', 'county', 'avg_pm25', 'avg_aqi'],
+            color_continuous_scale='RdYlGn_r',
+            size_max=15,
+            zoom=3,
+            height=self.config.height,
+            title='Air Quality Monitoring Sites'
+        )
+
+        fig.update_layout(
+            mapbox_style="open-street-map",
+            margin={"r": 0, "t": 30, "l": 0, "b": 0}
+        )
+
+        return fig
+
 
 # =============================================================================
 # MAIN DASHBOARD APPLICATION
@@ -731,7 +709,7 @@ class EPADashboard:
             padding: 0rem 1rem; 
         }
 
-        /* Tab styling with better contrast */
+        /* Tab styling */
         .stTabs [data-baseweb="tab-list"] { 
             gap: 4px;
             background-color: rgba(255, 255, 255, 0.05);
@@ -739,33 +717,7 @@ class EPADashboard:
             border-radius: 10px;
         }
 
-        .stTabs [data-baseweb="tab"] {
-            height: 50px;
-            padding-left: 20px;
-            padding-right: 20px;
-            background-color: rgba(255, 255, 255, 0.08);
-            color: #ffffff !important;
-            font-weight: 500;
-            font-size: 14px;
-            border-radius: 8px 8px 0 0;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            transition: all 0.3s ease;
-        }
-
-        .stTabs [data-baseweb="tab"]:hover {
-            background-color: rgba(255, 255, 255, 0.15);
-            border-color: rgba(255, 255, 255, 0.2);
-        }
-
-        .stTabs [aria-selected="true"] {
-            background-color: rgba(71, 85, 105, 0.95) !important;  /* #475569 */
-            color: #ffffff !important;
-            font-weight: 600;
-            border-color: rgba(148, 163, 184, 0.5);
-            box-shadow: 0 -2px 8px rgba(71, 85, 105, 0.3);
-        }
-
-        /* Metric cards with better visibility */
+        /* Metric cards */
         div[data-testid="metric-container"] {
             background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
             border: 1px solid rgba(255, 255, 255, 0.2);
@@ -775,289 +727,10 @@ class EPADashboard:
             backdrop-filter: blur(10px);
         }
 
-        div[data-testid="metric-container"] [data-testid="metric-label"] {
-            color: rgba(255, 255, 255, 0.8) !important;
-            font-size: 14px !important;
-            font-weight: 500 !important;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        div[data-testid="metric-container"] [data-testid="metric-value"] {
-            color: #ffffff !important;
-            font-size: 24px !important;
-            font-weight: 700 !important;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-        }
-
-        div[data-testid="metric-container"] [data-testid="metric-delta"] {
-            color: #4ade80 !important;
-            font-size: 12px !important;
-            font-weight: 600 !important;
-            background-color: rgba(74, 222, 128, 0.1);
-            padding: 2px 6px;
-            border-radius: 4px;
-            display: inline-block;
-            margin-top: 4px;
-        }
-
-        /* Headers with better contrast */
+        /* Headers */
         h1, h2, h3 {
             color: #ffffff !important;
             text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-        }
-
-        h1 {
-            font-size: 36px !important;
-            font-weight: 700 !important;
-            margin-bottom: 10px !important;
-        }
-
-        h2 {
-            font-size: 24px !important;
-            font-weight: 600 !important;
-            margin-top: 20px !important;
-            margin-bottom: 15px !important;
-            padding-bottom: 8px;
-            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
-        }
-
-        h3 {
-            font-size: 18px !important;
-            font-weight: 600 !important;
-        }
-
-        /* Caption text */
-        .caption {
-            color: rgba(255, 255, 255, 0.6) !important;
-            font-size: 13px !important;
-        }
-
-        /* Sidebar styling */
-        .css-1d391kg {
-            background: linear-gradient(180deg, rgba(14, 17, 23, 0.95) 0%, rgba(14, 17, 23, 0.98) 100%);
-        }
-
-        .sidebar .sidebar-content {
-            background-color: rgba(255, 255, 255, 0.02);
-        }
-
-        /* Expander styling */
-        .streamlit-expanderHeader {
-            background-color: rgba(255, 255, 255, 0.05) !important;
-            color: #ffffff !important;
-            border-radius: 8px;
-            font-weight: 500;
-        }
-
-        .streamlit-expanderHeader:hover {
-            background-color: rgba(255, 255, 255, 0.08) !important;
-        }
-
-        /* Button styling */
-        .stButton > button {
-            background-color: rgba(255, 255, 255, 0.1);
-            color: #ffffff;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 6px;
-            padding: 8px 16px;
-            font-weight: 500;
-            transition: all 0.3s ease;
-        }
-
-        .stButton > button:hover {
-            background-color: rgba(255, 255, 255, 0.2);
-            border-color: rgba(255, 255, 255, 0.3);
-            transform: translateY(-1px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
-
-        /* Selectbox and input styling */
-        .stSelectbox > div > div {
-            background-color: rgba(255, 255, 255, 0.05) !important;
-            color: #ffffff !important;
-            border: 1px solid rgba(255, 255, 255, 0.2) !important;
-        }
-
-        .stTextInput > div > div > input {
-            background-color: rgba(255, 255, 255, 0.05) !important;
-            color: #ffffff !important;
-            border: 1px solid rgba(255, 255, 255, 0.2) !important;
-        }
-
-        /* Dataframe styling */
-        .dataframe {
-            background-color: rgba(255, 255, 255, 0.05) !important;
-            color: #ffffff !important;
-        }
-
-        .dataframe thead tr th {
-            background-color: rgba(255, 255, 255, 0.1) !important;
-            color: #ffffff !important;
-            font-weight: 600 !important;
-            text-transform: uppercase;
-            font-size: 12px;
-            letter-spacing: 0.5px;
-        }
-
-        .dataframe tbody tr {
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        .dataframe tbody tr:hover {
-            background-color: rgba(255, 255, 255, 0.08) !important;
-        }
-
-        /* Warning, Info, Error boxes */
-        .stAlert {
-            background-color: rgba(255, 255, 255, 0.05) !important;
-            border: 1px solid rgba(255, 255, 255, 0.2) !important;
-            border-radius: 8px;
-            color: #ffffff !important;
-        }
-
-        div[data-baseweb="notification"] {
-            background-color: rgba(255, 255, 255, 0.1) !important;
-            border: 1px solid rgba(255, 255, 255, 0.2) !important;
-        }
-
-        /* Plot container */
-        .plot-container {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            padding: 15px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
-        }
-
-        /* Progress bar for data quality */
-        .stProgress > div > div > div {
-            background-color: #4ade80 !important;
-        }
-
-        .stProgress > div > div {
-            background-color: rgba(255, 255, 255, 0.1) !important;
-        }
-
-        /* Markdown text */
-        .markdown-text-container {
-            color: rgba(255, 255, 255, 0.9) !important;
-        }
-
-        p {
-            color: rgba(255, 255, 255, 0.8) !important;
-            line-height: 1.6;
-        }
-
-        /* Links */
-        a {
-            color: #60a5fa !important;
-            text-decoration: none;
-        }
-
-        a:hover {
-            color: #93c5fd !important;
-            text-decoration: underline;
-        }
-
-        /* Multiselect */
-        .stMultiSelect > div {
-            background-color: rgba(255, 255, 255, 0.05) !important;
-            border: 1px solid rgba(255, 255, 255, 0.2) !important;
-        }
-
-        /* Date input */
-        .stDateInput > div {
-            background-color: rgba(255, 255, 255, 0.05) !important;
-            color: #ffffff !important;
-        }
-
-        /* Slider */
-        .stSlider > div > div {
-            background-color: rgba(255, 255, 255, 0.1) !important;
-        }
-
-        .stSlider > div > div > div {
-            background-color: #4ade80 !important;
-        }
-
-        /* Download button special styling */
-        .stDownloadButton > button {
-            background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%);
-            color: #0e1117;
-            border: none;
-            font-weight: 600;
-        }
-
-        .stDownloadButton > button:hover {
-            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(74, 222, 128, 0.3);
-        }
-
-        /* Column gaps */
-        [data-testid="column"] {
-            padding: 0 8px;
-        }
-
-        /* Footer styling */
-        .footer {
-            color: rgba(255, 255, 255, 0.5) !important;
-            font-size: 12px !important;
-            text-align: center;
-            padding: 20px 0;
-            margin-top: 40px;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        /* Custom scrollbar for dark theme */
-        ::-webkit-scrollbar {
-            width: 10px;
-            height: 10px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 5px;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 5px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.3);
-        }
-
-        /* Checkbox styling */
-        .stCheckbox > label {
-            color: rgba(255, 255, 255, 0.9) !important;
-        }
-
-        /* Radio button styling */
-        .stRadio > label {
-            color: rgba(255, 255, 255, 0.9) !important;
-        }
-
-        .stRadio > div {
-            background-color: transparent !important;
-        }
-
-        /* Success, warning, error colors adjustment */
-        .success {
-            color: #4ade80 !important;
-            background-color: rgba(74, 222, 128, 0.1) !important;
-        }
-
-        .warning {
-            color: #fbbf24 !important;
-            background-color: rgba(251, 191, 36, 0.1) !important;
-        }
-
-        .error {
-            color: #f87171 !important;
-            background-color: rgba(248, 113, 113, 0.1) !important;
         }
         </style>
         """, unsafe_allow_html=True)
@@ -1072,6 +745,17 @@ class EPADashboard:
     def _render_sidebar(self) -> None:
         """Render sidebar with filters."""
         st.sidebar.header("🔎 Filters & Settings")
+
+        # Data info
+        with st.sidebar.expander("📊 Data Structure", expanded=False):
+            st.success("✅ Using pre-cleaned data")
+            st.info(f"""
+            **Available columns:**
+            - PM2.5: `{COLUMN_NAMES['PM25']}`
+            - AQI: `{COLUMN_NAMES['AQI']}`
+            - State: `{COLUMN_NAMES['STATE']}`
+            - Date: `{COLUMN_NAMES['DATE']}`
+            """)
 
         # Get available states
         states_list = self.data_loader.get_states_list()
@@ -1144,26 +828,22 @@ class EPADashboard:
         st.sidebar.markdown("---")
         st.sidebar.info("""
         **📊 Dashboard Features:**
-        - Real-time data processing
+        - Pre-cleaned data processing
         - Interactive visualizations
         - Multi-state comparison
         - Anomaly detection
+        - Site location mapping
         - Data quality monitoring
-        - Export capabilities
-
-        **🔧 Data Cleanup Applied:**
-        - NULL values calculated
-        - Negative values corrected
-        - AQI values normalized
         """)
 
     def _render_main_content(self) -> None:
         """Render main dashboard content."""
         # Tab navigation
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📊 Overview",
             "📈 Detailed Analysis",
             "🏭 State Comparison",
+            "📍 Site Analysis",
             "📉 Data Quality",
             "🔍 Raw Data Explorer"
         ])
@@ -1178,9 +858,12 @@ class EPADashboard:
             self._render_comparison_tab()
 
         with tab4:
-            self._render_quality_tab()
+            self._render_site_analysis_tab()
 
         with tab5:
+            self._render_quality_tab()
+
+        with tab6:
             self._render_explorer_tab()
 
     def _render_overview_tab(self) -> None:
@@ -1222,9 +905,9 @@ class EPADashboard:
             st.metric(
                 label="Data Cleaned",
                 value=format_number(
-                    kpi_data.get('negative_fixed', 0) +
-                    kpi_data.get('null_aqi_fixed', 0)
-                )
+                    kpi_data.get('cleaned_records', 0)
+                ),
+                delta="Records"
             )
 
         with col6:
@@ -1375,33 +1058,25 @@ class EPADashboard:
             worst_states = comparison_data.nlargest(5, 'avg_pm25')[['State Name', 'avg_pm25', 'unhealthy_days']]
             st.dataframe(worst_states, use_container_width=True, hide_index=True)
 
-        # Detailed Table
-        st.subheader("📋 Detailed State Metrics")
+    def _render_site_analysis_tab(self) -> None:
+        """Render site analysis tab."""
+        st.header("📍 Monitoring Site Analysis")
 
-        comparison_data['Rank'] = comparison_data['avg_pm25'].rank(method='min').astype(int)
+        site_data = self.data_loader.get_site_analysis(st.session_state.filter_state)
 
-        display_cols = ['Rank', 'State Name', 'counties', 'measurements',
-                        'avg_pm25', 'avg_aqi', 'pct_good_days']
+        if site_data.empty:
+            st.warning("No site data available")
+            return
 
-        st.dataframe(
-            comparison_data[display_cols].sort_values('Rank'),
-            use_container_width=True,
-            column_config={
-                'Rank': st.column_config.NumberColumn('Rank', format='%d'),
-                'State Name': 'State',
-                'counties': st.column_config.NumberColumn('Counties', format='%d'),
-                'measurements': st.column_config.NumberColumn('Measurements', format='%,d'),
-                'avg_pm25': st.column_config.NumberColumn('Avg PM2.5', format='%.2f'),
-                'avg_aqi': st.column_config.NumberColumn('Avg AQI', format='%.1f'),
-                'pct_good_days': st.column_config.ProgressColumn(
-                    'Good Days %',
-                    min_value=0,
-                    max_value=100,
-                    format='%.1f%%'
-                )
-            },
-            hide_index=True
-        )
+        # Map visualization
+        st.subheader("🗺️ Site Locations")
+        fig_map = self.visualizations.create_site_map(site_data)
+        st.plotly_chart(fig_map, use_container_width=True, key="site_map")
+
+        # Site statistics
+        st.subheader("📊 Top Monitoring Sites by PM2.5")
+        display_cols = ['site_name', 'state', 'county', 'avg_pm25', 'avg_aqi', 'measurements']
+        st.dataframe(site_data[display_cols].head(10), use_container_width=True, hide_index=True)
 
     def _render_quality_tab(self) -> None:
         """Render data quality tab."""
@@ -1428,56 +1103,28 @@ class EPADashboard:
             st.metric("Total Records", format_number(quality_metrics.total_records))
 
         with col2:
-            null_pct = (
-                        quality_metrics.null_count / quality_metrics.total_records * 100) if quality_metrics.total_records > 0 else 0
+            null_pct = (quality_metrics.null_count / quality_metrics.total_records * 100) if quality_metrics.total_records > 0 else 0
             st.metric("NULL Values", format_number(quality_metrics.null_count), f"{null_pct:.2f}%")
 
         with col3:
-            neg_pct = (
-                        quality_metrics.negative_count / quality_metrics.total_records * 100) if quality_metrics.total_records > 0 else 0
-            st.metric("Negative Values", format_number(quality_metrics.negative_count), f"{neg_pct:.2f}%")
+            neg_pct = (quality_metrics.negative_count / quality_metrics.total_records * 100) if quality_metrics.total_records > 0 else 0
+            st.metric("Negative Values Fixed", format_number(quality_metrics.negative_count), f"{neg_pct:.2f}%")
 
         with col4:
-            outlier_pct = (
-                        quality_metrics.outlier_count / quality_metrics.total_records * 100) if quality_metrics.total_records > 0 else 0
+            outlier_pct = (quality_metrics.outlier_count / quality_metrics.total_records * 100) if quality_metrics.total_records > 0 else 0
             st.metric("Outliers", format_number(quality_metrics.outlier_count), f"{outlier_pct:.2f}%")
-
-        # Cleaning Operations
-        st.subheader("🧹 Data Cleaning Operations Applied")
-
-        operations = pd.DataFrame({
-            "Operation": [
-                "Replace NULL PM2.5 with 0",
-                "Convert negative values to 0",
-                "Calculate missing AQI values",
-                "Cap extreme AQI at 500"
-            ],
-            "Records Affected": [
-                quality_metrics.null_count,
-                quality_metrics.negative_count,
-                quality_metrics.null_count,
-                quality_metrics.outlier_count
-            ],
-            "Status": ["✅ Applied"] * 4
-        })
-
-        st.dataframe(operations, use_container_width=True, hide_index=True)
 
     def _render_explorer_tab(self) -> None:
         """Render raw data explorer tab."""
         st.header("🔍 Raw Data Explorer")
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
         with col1:
             rows_limit = st.selectbox("Rows to display", [100, 500, 1000], key="rows_limit")
 
         with col2:
             search_term = st.text_input("Search", placeholder="Filter data...", key="search")
-
-        with col3:
-            cols = ['Date Local', 'State Name', 'County Name', 'Arithmetic Mean', 'AQI']
-            selected_cols = st.multiselect("Columns", cols, default=cols[:4], key="cols")
 
         # Get data
         raw_data = self.data_loader.get_raw_data(st.session_state.filter_state, limit=rows_limit)
@@ -1489,12 +1136,6 @@ class EPADashboard:
                     lambda x: x.str.contains(search_term, case=False, na=False)
                 ).any(axis=1)
                 raw_data = raw_data[mask]
-
-            # Show selected columns
-            if selected_cols:
-                available_cols = [col for col in selected_cols if col in raw_data.columns]
-                if available_cols:
-                    raw_data = raw_data[available_cols]
 
             st.subheader(f"📊 Showing {len(raw_data)} records")
             st.dataframe(raw_data, use_container_width=True, height=400)
@@ -1530,14 +1171,13 @@ class EPADashboard:
 # =============================================================================
 
 if __name__ == "__main__":
-    # Configuration - Use relative path for deployment compatibility
+    # Configuration
     import os
     from pathlib import Path
 
-    # Get the directory where this script is located
     BASE_DIR = Path(__file__).parent
 
-    # Try parquet first (smaller, faster), fallback to CSV
+    # Try parquet first, fallback to CSV
     DATA_PATH_PARQUET = BASE_DIR / 'Data' / 'daily_88101_2024_cleaned.parquet'
     DATA_PATH_CSV = BASE_DIR / 'Data' / 'daily_88101_2024_cleaned.csv'
 
