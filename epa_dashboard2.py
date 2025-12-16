@@ -419,7 +419,7 @@ class DataLoader:
             COUNT(*) as measurements,
             ROUND(AVG({COLUMN_NAMES['PM25']}), 2) as avg_pm25,
             ROUND(AVG({COLUMN_NAMES['AQI']}), 1) as avg_aqi,
-            ROUND(AVG({COLUMN_NAMES['PERCENT']}), 1) as avg_observation_pct
+            ROUND(AVG("{COLUMN_NAMES['PERCENT']}"), 1) as avg_observation_pct
         FROM '{_self.data_path}'
         {where_clause}
         GROUP BY "{COLUMN_NAMES['SITE']}", "{COLUMN_NAMES['STATE']}", "{COLUMN_NAMES['COUNTY']}"
@@ -707,30 +707,122 @@ class EPADashboard:
         /* Main container */
         .main { 
             padding: 0rem 1rem; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         }
 
-        /* Tab styling */
+        /* Improved Tab styling */
         .stTabs [data-baseweb="tab-list"] { 
-            gap: 4px;
-            background-color: rgba(255, 255, 255, 0.05);
-            padding: 5px;
-            border-radius: 10px;
+            gap: 8px;
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
+            padding: 10px;
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
         }
 
-        /* Metric cards */
+        .stTabs [data-baseweb="tab"] {
+            height: 50px;
+            white-space: pre-wrap;
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 10px 20px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .stTabs [data-baseweb="tab"]:hover {
+            background-color: rgba(255, 255, 255, 0.15);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .stTabs [aria-selected="true"] {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.4) 0%, rgba(118, 75, 162, 0.4) 100%);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        /* Tab Panel Background */
+        .stTabs [data-baseweb="tab-panel"] {
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 15px;
+            padding: 20px;
+            margin-top: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* Metric cards enhancement */
         div[data-testid="metric-container"] {
             background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 100%);
             border: 1px solid rgba(255, 255, 255, 0.2);
-            padding: 15px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
             backdrop-filter: blur(10px);
+            transition: transform 0.3s ease;
         }
 
-        /* Headers */
-        h1, h2, h3 {
+        div[data-testid="metric-container"]:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px 0 rgba(31, 38, 135, 0.5);
+        }
+
+        /* Headers with gradient */
+        h1 {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 700;
+        }
+
+        h2, h3 {
             color: #ffffff !important;
-            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Buttons enhancement */
+        .stButton > button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 10px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px 0 rgba(31, 38, 135, 0.2);
+        }
+
+        .stButton > button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 7px 20px 0 rgba(31, 38, 135, 0.4);
+        }
+
+        /* Dataframe styling */
+        .dataframe {
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        /* Expander enhancement */
+        .streamlit-expanderHeader {
+            background-color: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* Sidebar enhancement */
+        .css-1d391kg {
+            background: linear-gradient(180deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.15) 100%);
+        }
+
+        /* Select boxes and inputs */
+        .stSelectbox > div > div,
+        .stTextInput > div > div > input {
+            background-color: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
         }
         </style>
         """, unsafe_allow_html=True)
