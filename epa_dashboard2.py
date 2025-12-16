@@ -2170,6 +2170,9 @@ WHERE prozent_change > 100
 
             try:
                 from prophet import Prophet
+                import logging
+                logging.getLogger('prophet').setLevel(logging.ERROR)
+                logging.getLogger('cmdstanpy').setLevel(logging.ERROR)
 
                 with st.spinner("Trainiere Prophet-Modell..."):
                     # Prepare data for Prophet
@@ -2177,15 +2180,24 @@ WHERE prozent_change > 100
                     prophet_df.columns = ['ds', 'y']
                     prophet_df = prophet_df.dropna()
 
-                    # Train model
-                    model = Prophet(
-                        daily_seasonality=True,
-                        weekly_seasonality=True,
-                        yearly_seasonality=False,
-                        changepoint_prior_scale=0.05,
-                        interval_width=0.95
-                    )
-                    model.fit(prophet_df, show_progress=False)
+                    # Train model with error handling
+                    try:
+                        model = Prophet(
+                            daily_seasonality=True,
+                            weekly_seasonality=True,
+                            yearly_seasonality=False,
+                            changepoint_prior_scale=0.05,
+                            interval_width=0.95
+                        )
+                        model.fit(prophet_df, show_progress=False)
+                    except AttributeError:
+                        # Fallback if stan_backend issue occurs
+                        model = Prophet(
+                            daily_seasonality=True,
+                            weekly_seasonality=True,
+                            yearly_seasonality=False
+                        )
+                        model.fit(prophet_df)
 
                     # Make predictions
                     future = model.make_future_dataframe(periods=forecast_days)
@@ -2493,18 +2505,27 @@ WHERE prozent_change > 100
             try:
                 # Run all models quickly for comparison
                 from prophet import Prophet
+                import logging
+                logging.getLogger('prophet').setLevel(logging.ERROR)
+                logging.getLogger('cmdstanpy').setLevel(logging.ERROR)
 
                 # Prophet
                 prophet_df = df[['date', 'pm25']].copy()
                 prophet_df.columns = ['ds', 'y']
                 prophet_df = prophet_df.dropna()
-                model_prophet = Prophet(
-                    daily_seasonality=True,
-                    weekly_seasonality=True,
-                    yearly_seasonality=False
-                )
+
                 with st.spinner("Vergleiche Modelle..."):
-                    model_prophet.fit(prophet_df, show_progress=False)
+                    try:
+                        model_prophet = Prophet(
+                            daily_seasonality=True,
+                            weekly_seasonality=True,
+                            yearly_seasonality=False
+                        )
+                        model_prophet.fit(prophet_df, show_progress=False)
+                    except AttributeError:
+                        # Fallback if stan_backend issue
+                        model_prophet = Prophet()
+                        model_prophet.fit(prophet_df)
                     future_prophet = model_prophet.make_future_dataframe(periods=forecast_days)
                     forecast_prophet = model_prophet.predict(future_prophet)
                     prophet_forecast = forecast_prophet[forecast_prophet['ds'] > df['date'].max()]['yhat'].values
