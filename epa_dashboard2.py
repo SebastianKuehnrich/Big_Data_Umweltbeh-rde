@@ -20,6 +20,10 @@ from scipy import stats
 from io import BytesIO
 import hashlib
 import json
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import warnings
+warnings.filterwarnings('ignore')
 
 
 # =============================================================================
@@ -735,6 +739,34 @@ class DataLoader:
             return pd.DataFrame()
 
     @st.cache_data(ttl=3600)
+    def get_forecasting_data(_self, state: str, days_back: int = 180) -> pd.DataFrame:
+        """Get time series data for forecasting."""
+        query = f"""
+        WITH daily_data AS (
+            SELECT
+                "{COLUMN_NAMES['DATE']}"::DATE as date,
+                ROUND(AVG(GREATEST(COALESCE({COLUMN_NAMES['PM25']}, 0), 0)), 2) as pm25,
+                ROUND(AVG(GREATEST(COALESCE({COLUMN_NAMES['AQI']}, 0), 0)), 1) as aqi,
+                COUNT(*) as measurements
+            FROM '{_self.data_path}'
+            WHERE "{COLUMN_NAMES['STATE']}" = '{state}'
+            GROUP BY "{COLUMN_NAMES['DATE']}"
+            ORDER BY "{COLUMN_NAMES['DATE']}" DESC
+            LIMIT {days_back}
+        )
+        SELECT * FROM daily_data ORDER BY date ASC
+        """
+
+        try:
+            df = _self.connection.execute(query).fetchdf()
+            # Ensure proper date format
+            df['date'] = pd.to_datetime(df['date'])
+            return df
+        except Exception as e:
+            st.error(f"Failed to get forecasting data: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
     def get_site_analysis(_self, filter_state: FilterState) -> pd.DataFrame:
         """Get analysis by monitoring sites."""
         where_clause = _self.query_builder.build_where_clause(
@@ -1261,25 +1293,32 @@ class EPADashboard:
         - Site location mapping
         - Data quality monitoring
         
-        **🔥 NEW - Advanced Analytics:**
+        **🔥 Advanced Analytics:**
         - LAG Window Functions
         - ROW_NUMBER Rankings
         - Rolling Averages
         - Quartals-Vergleiche
         - Z-Score Anomalien
+        
+        **🔮 NEW - Forecasting:**
+        - Prophet Time Series
+        - Linear Regression
+        - Moving Average
+        - Model Comparison
         """)
 
     def _render_main_content(self) -> None:
         """Render main dashboard content."""
         # Tab navigation
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "📊 Overview",
             "📈 Detailed Analysis",
             "🏭 State Comparison",
             "📍 Site Analysis",
             "📉 Data Quality",
             "🔍 Raw Data Explorer",
-            "🔥 Advanced Analytics"
+            "🔥 Advanced Analytics",
+            "🔮 Forecasting"
         ])
 
         with tab1:
@@ -1302,6 +1341,9 @@ class EPADashboard:
 
         with tab7:
             self._render_advanced_analytics_tab()
+
+        with tab8:
+            self._render_forecasting_tab()
 
     def _render_overview_tab(self) -> None:
         """Render overview tab."""
@@ -2053,6 +2095,529 @@ WHERE prozent_change > 100
                     )
                 else:
                     st.info("Keine Anomalie-Daten verfügbar.")
+
+    def _render_forecasting_tab(self) -> None:
+        """Render forecasting tab with 3 prediction models."""
+        st.header("🔮 Air Quality Forecasting")
+        st.markdown("""
+        **Vorhersage-Modelle für PM2.5-Werte**
+        
+        Dieses Tab bietet 3 verschiedene Forecasting-Ansätze:
+        1. **Prophet** - Facebook's Time Series Forecasting
+        2. **Linear Regression** - Trend-basierte Vorhersage
+        3. **Moving Average** - Einfache gleitende Durchschnitte
+        """)
+
+        # State selection
+        states_list = self.data_loader.get_states_list()
+        if not states_list:
+            st.warning("Keine Staaten verfügbar")
+            return
+
+        col1, col2, col3 = st.columns([2, 1, 1])
+
+        with col1:
+            selected_state = st.selectbox(
+                "🗺️ Staat für Vorhersage wählen:",
+                options=states_list,
+                index=0,
+                key="forecast_state"
+            )
+
+        with col2:
+            forecast_days = st.slider(
+                "📅 Vorhersage-Tage:",
+                min_value=7,
+                max_value=30,
+                value=14,
+                key="forecast_days"
+            )
+
+        with col3:
+            history_days = st.slider(
+                "📊 Historie (Tage):",
+                min_value=90,
+                max_value=365,
+                value=180,
+                key="history_days"
+            )
+
+        # Load data
+        with st.spinner(f"Lade Daten für {selected_state}..."):
+            df = self.data_loader.get_forecasting_data(selected_state, history_days)
+
+        if df.empty or len(df) < 30:
+            st.warning(f"Nicht genügend Daten für {selected_state} (mindestens 30 Tage benötigt)")
+            return
+
+        # Display data info
+        st.info(f"📊 Verfügbare Daten: {len(df)} Tage | Von {df['date'].min().strftime('%Y-%m-%d')} bis {df['date'].max().strftime('%Y-%m-%d')}")
+
+        # Create tabs for different models
+        forecast_tab1, forecast_tab2, forecast_tab3, forecast_tab4 = st.tabs([
+            "🔮 Prophet Forecast",
+            "📈 Linear Regression",
+            "📊 Moving Average",
+            "📉 Model Comparison"
+        ])
+
+        # =====================================================================
+        # TAB 1: PROPHET FORECAST
+        # =====================================================================
+        with forecast_tab1:
+            st.subheader("📈 Prophet Time Series Forecasting")
+            st.markdown("**Facebook Prophet** - Automatische Erkennung von Trends, Saisonalität und Feiertagen")
+
+            try:
+                from prophet import Prophet
+
+                with st.spinner("Trainiere Prophet-Modell..."):
+                    # Prepare data for Prophet
+                    prophet_df = df[['date', 'pm25']].copy()
+                    prophet_df.columns = ['ds', 'y']
+                    prophet_df = prophet_df.dropna()
+
+                    # Train model
+                    model = Prophet(
+                        daily_seasonality=True,
+                        weekly_seasonality=True,
+                        yearly_seasonality=False,
+                        changepoint_prior_scale=0.05,
+                        interval_width=0.95
+                    )
+                    model.fit(prophet_df)
+
+                    # Make predictions
+                    future = model.make_future_dataframe(periods=forecast_days)
+                    forecast = model.predict(future)
+
+                    # Visualization
+                    fig = go.Figure()
+
+                    # Historical data
+                    fig.add_trace(go.Scatter(
+                        x=df['date'],
+                        y=df['pm25'],
+                        mode='lines+markers',
+                        name='Historische Daten',
+                        line=dict(color='#3498db', width=2),
+                        marker=dict(size=4)
+                    ))
+
+                    # Forecast
+                    forecast_data = forecast[forecast['ds'] > df['date'].max()]
+                    fig.add_trace(go.Scatter(
+                        x=forecast_data['ds'],
+                        y=forecast_data['yhat'],
+                        mode='lines+markers',
+                        name='Vorhersage',
+                        line=dict(color='#e74c3c', width=2, dash='dash'),
+                        marker=dict(size=6)
+                    ))
+
+                    # Confidence interval
+                    fig.add_trace(go.Scatter(
+                        x=pd.concat([forecast_data['ds'], forecast_data['ds'][::-1]]),
+                        y=pd.concat([forecast_data['yhat_upper'], forecast_data['yhat_lower'][::-1]]),
+                        fill='toself',
+                        fillcolor='rgba(231, 76, 60, 0.2)',
+                        line=dict(color='rgba(255,255,255,0)'),
+                        name='95% Konfidenzintervall',
+                        hoverinfo='skip'
+                    ))
+
+                    fig.update_layout(
+                        title=f'Prophet Forecast - {selected_state} (nächste {forecast_days} Tage)',
+                        xaxis_title='Datum',
+                        yaxis_title='PM2.5 (µg/m³)',
+                        height=500,
+                        hovermode='x unified'
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True, key="prophet_chart")
+
+                    # Metrics
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    avg_forecast = forecast_data['yhat'].mean()
+                    max_forecast = forecast_data['yhat'].max()
+                    min_forecast = forecast_data['yhat'].min()
+                    current_avg = df['pm25'].tail(7).mean()
+
+                    with col1:
+                        st.metric("Ø Vorhersage", f"{avg_forecast:.2f} µg/m³")
+                    with col2:
+                        st.metric("Max Vorhersage", f"{max_forecast:.2f} µg/m³")
+                    with col3:
+                        st.metric("Min Vorhersage", f"{min_forecast:.2f} µg/m³")
+                    with col4:
+                        delta = avg_forecast - current_avg
+                        st.metric("Trend", f"{delta:+.2f} µg/m³", delta=f"{delta:+.1f}")
+
+                    # Forecast table
+                    with st.expander("📋 Vorhersage-Tabelle"):
+                        forecast_display = forecast_data[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
+                        forecast_display.columns = ['Datum', 'Vorhersage', 'Untere Grenze', 'Obere Grenze']
+                        st.dataframe(forecast_display, use_container_width=True, hide_index=True)
+
+            except ImportError:
+                st.error("Prophet nicht installiert. Bitte führe aus: `pip install prophet`")
+            except Exception as e:
+                st.error(f"Fehler bei Prophet-Vorhersage: {e}")
+
+        # =====================================================================
+        # TAB 2: LINEAR REGRESSION
+        # =====================================================================
+        with forecast_tab2:
+            st.subheader("📊 Linear Regression Forecast")
+            st.markdown("**Trend-basierte Vorhersage** - Extrapolation des linearen Trends")
+
+            try:
+                # Prepare data
+                df_lr = df.copy()
+                df_lr['day_num'] = (df_lr['date'] - df_lr['date'].min()).dt.days
+
+                # Split train/test
+                train_size = int(len(df_lr) * 0.8)
+                train_data = df_lr[:train_size]
+                test_data = df_lr[train_size:]
+
+                # Train model
+                X_train = train_data[['day_num']].values
+                y_train = train_data['pm25'].values
+
+                model_lr = LinearRegression()
+                model_lr.fit(X_train, y_train)
+
+                # Predictions on test set
+                X_test = test_data[['day_num']].values
+                y_test = test_data['pm25'].values
+                y_pred_test = model_lr.predict(X_test)
+
+                # Future predictions
+                last_day = df_lr['day_num'].max()
+                future_days = np.arange(last_day + 1, last_day + forecast_days + 1).reshape(-1, 1)
+                future_pred = model_lr.predict(future_days)
+
+                future_dates = pd.date_range(
+                    start=df_lr['date'].max() + timedelta(days=1),
+                    periods=forecast_days
+                )
+
+                # Visualization
+                fig = go.Figure()
+
+                # Historical data
+                fig.add_trace(go.Scatter(
+                    x=df['date'],
+                    y=df['pm25'],
+                    mode='lines+markers',
+                    name='Historische Daten',
+                    line=dict(color='#3498db', width=2),
+                    marker=dict(size=4)
+                ))
+
+                # Test predictions
+                fig.add_trace(go.Scatter(
+                    x=test_data['date'],
+                    y=y_pred_test,
+                    mode='markers',
+                    name='Test-Vorhersage',
+                    marker=dict(color='#f39c12', size=6, symbol='diamond')
+                ))
+
+                # Future forecast
+                fig.add_trace(go.Scatter(
+                    x=future_dates,
+                    y=future_pred,
+                    mode='lines+markers',
+                    name='Vorhersage',
+                    line=dict(color='#e74c3c', width=2, dash='dash'),
+                    marker=dict(size=6)
+                ))
+
+                # Trend line
+                all_days = df_lr['day_num'].values.reshape(-1, 1)
+                trend_pred = model_lr.predict(all_days)
+                fig.add_trace(go.Scatter(
+                    x=df['date'],
+                    y=trend_pred,
+                    mode='lines',
+                    name='Trend-Linie',
+                    line=dict(color='#95a5a6', width=1, dash='dot')
+                ))
+
+                fig.update_layout(
+                    title=f'Linear Regression Forecast - {selected_state}',
+                    xaxis_title='Datum',
+                    yaxis_title='PM2.5 (µg/m³)',
+                    height=500,
+                    hovermode='x unified'
+                )
+
+                st.plotly_chart(fig, use_container_width=True, key="lr_chart")
+
+                # Model metrics
+                col1, col2, col3, col4 = st.columns(4)
+
+                mae = mean_absolute_error(y_test, y_pred_test)
+                rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
+                r2 = r2_score(y_test, y_pred_test)
+
+                with col1:
+                    st.metric("R² Score", f"{r2:.3f}", help="Erklärte Varianz (1.0 = perfekt)")
+                with col2:
+                    st.metric("MAE", f"{mae:.2f} µg/m³", help="Mittlerer absoluter Fehler")
+                with col3:
+                    st.metric("RMSE", f"{rmse:.2f} µg/m³", help="Root Mean Squared Error")
+                with col4:
+                    slope = model_lr.coef_[0]
+                    st.metric("Trend/Tag", f"{slope:+.3f} µg/m³", help="Tägliche Änderung")
+
+                # Forecast table
+                with st.expander("📋 Vorhersage-Tabelle"):
+                    forecast_df_lr = pd.DataFrame({
+                        'Datum': future_dates,
+                        'Vorhersage': future_pred
+                    })
+                    st.dataframe(forecast_df_lr, use_container_width=True, hide_index=True)
+
+            except Exception as e:
+                st.error(f"Fehler bei Linear Regression: {e}")
+
+        # =====================================================================
+        # TAB 3: MOVING AVERAGE
+        # =====================================================================
+        with forecast_tab3:
+            st.subheader("📉 Moving Average Forecast")
+            st.markdown("**Einfache Vorhersage** - Basierend auf gleitendem Durchschnitt")
+
+            window_size = st.slider(
+                "Fenster-Größe (Tage):",
+                min_value=7,
+                max_value=60,
+                value=21,
+                key="ma_window"
+            )
+
+            try:
+                # Calculate moving average
+                df_ma = df.copy()
+                df_ma['ma'] = df_ma['pm25'].rolling(window=window_size, min_periods=1).mean()
+
+                # Simple forecast: last MA value repeated
+                last_ma = df_ma['ma'].iloc[-1]
+                future_dates = pd.date_range(
+                    start=df_ma['date'].max() + timedelta(days=1),
+                    periods=forecast_days
+                )
+
+                # Add some variance based on recent volatility
+                recent_std = df_ma['pm25'].tail(window_size).std()
+                forecast_ma = np.random.normal(last_ma, recent_std * 0.3, forecast_days)
+                forecast_ma = np.maximum(forecast_ma, 0)  # No negative values
+
+                # Visualization
+                fig = go.Figure()
+
+                # Historical data
+                fig.add_trace(go.Scatter(
+                    x=df_ma['date'],
+                    y=df_ma['pm25'],
+                    mode='lines',
+                    name='Historische Daten',
+                    line=dict(color='#3498db', width=1.5),
+                    opacity=0.6
+                ))
+
+                # Moving average
+                fig.add_trace(go.Scatter(
+                    x=df_ma['date'],
+                    y=df_ma['ma'],
+                    mode='lines',
+                    name=f'{window_size}-Tage MA',
+                    line=dict(color='#2ecc71', width=2)
+                ))
+
+                # Forecast
+                fig.add_trace(go.Scatter(
+                    x=future_dates,
+                    y=forecast_ma,
+                    mode='lines+markers',
+                    name='Vorhersage',
+                    line=dict(color='#e74c3c', width=2, dash='dash'),
+                    marker=dict(size=6)
+                ))
+
+                fig.update_layout(
+                    title=f'Moving Average Forecast - {selected_state}',
+                    xaxis_title='Datum',
+                    yaxis_title='PM2.5 (µg/m³)',
+                    height=500,
+                    hovermode='x unified'
+                )
+
+                st.plotly_chart(fig, use_container_width=True, key="forecast_ma_chart")
+
+                # Metrics
+                col1, col2, col3, col4 = st.columns(4)
+
+                with col1:
+                    st.metric("Aktueller MA", f"{last_ma:.2f} µg/m³")
+                with col2:
+                    st.metric("Ø Vorhersage", f"{forecast_ma.mean():.2f} µg/m³")
+                with col3:
+                    st.metric("Volatilität", f"{recent_std:.2f} µg/m³")
+                with col4:
+                    trend = df_ma['ma'].iloc[-1] - df_ma['ma'].iloc[-window_size]
+                    st.metric("MA Trend", f"{trend:+.2f} µg/m³")
+
+                # Forecast table
+                with st.expander("📋 Vorhersage-Tabelle"):
+                    forecast_df_ma = pd.DataFrame({
+                        'Datum': future_dates,
+                        'Vorhersage': forecast_ma
+                    })
+                    st.dataframe(forecast_df_ma, use_container_width=True, hide_index=True)
+
+            except Exception as e:
+                st.error(f"Fehler bei Moving Average: {e}")
+
+        # =====================================================================
+        # TAB 4: MODEL COMPARISON
+        # =====================================================================
+        with forecast_tab4:
+            st.subheader("📊 Modell-Vergleich")
+            st.markdown("**Vergleich der 3 Vorhersage-Modelle**")
+
+            try:
+                # Run all models quickly for comparison
+                from prophet import Prophet
+
+                # Prophet
+                prophet_df = df[['date', 'pm25']].copy()
+                prophet_df.columns = ['ds', 'y']
+                prophet_df = prophet_df.dropna()
+                model_prophet = Prophet(
+                    daily_seasonality=True,
+                    weekly_seasonality=True,
+                    yearly_seasonality=False
+                )
+                with st.spinner("Vergleiche Modelle..."):
+                    model_prophet.fit(prophet_df)
+                    future_prophet = model_prophet.make_future_dataframe(periods=forecast_days)
+                    forecast_prophet = model_prophet.predict(future_prophet)
+                    prophet_forecast = forecast_prophet[forecast_prophet['ds'] > df['date'].max()]['yhat'].values
+
+                # Linear Regression
+                df_lr = df.copy()
+                df_lr['day_num'] = (df_lr['date'] - df_lr['date'].min()).dt.days
+                X_lr = df_lr[['day_num']].values
+                y_lr = df_lr['pm25'].values
+                model_lr = LinearRegression()
+                model_lr.fit(X_lr, y_lr)
+                last_day = df_lr['day_num'].max()
+                future_days_lr = np.arange(last_day + 1, last_day + forecast_days + 1).reshape(-1, 1)
+                lr_forecast = model_lr.predict(future_days_lr)
+
+                # Moving Average
+                last_ma = df['pm25'].rolling(window=21).mean().iloc[-1]
+                ma_forecast = np.full(forecast_days, last_ma)
+
+                # Comparison chart
+                future_dates = pd.date_range(
+                    start=df['date'].max() + timedelta(days=1),
+                    periods=forecast_days
+                )
+
+                fig = go.Figure()
+
+                # Historical
+                fig.add_trace(go.Scatter(
+                    x=df['date'].tail(60),
+                    y=df['pm25'].tail(60),
+                    mode='lines',
+                    name='Historie (letzte 60 Tage)',
+                    line=dict(color='#95a5a6', width=2)
+                ))
+
+                # Forecasts
+                fig.add_trace(go.Scatter(
+                    x=future_dates,
+                    y=prophet_forecast,
+                    mode='lines+markers',
+                    name='Prophet',
+                    line=dict(color='#3498db', width=2),
+                    marker=dict(size=6)
+                ))
+
+                fig.add_trace(go.Scatter(
+                    x=future_dates,
+                    y=lr_forecast,
+                    mode='lines+markers',
+                    name='Linear Regression',
+                    line=dict(color='#e74c3c', width=2),
+                    marker=dict(size=6)
+                ))
+
+                fig.add_trace(go.Scatter(
+                    x=future_dates,
+                    y=ma_forecast,
+                    mode='lines+markers',
+                    name='Moving Average',
+                    line=dict(color='#2ecc71', width=2),
+                    marker=dict(size=6)
+                ))
+
+                fig.update_layout(
+                    title=f'Modell-Vergleich - {selected_state}',
+                    xaxis_title='Datum',
+                    yaxis_title='PM2.5 (µg/m³)',
+                    height=500,
+                    hovermode='x unified'
+                )
+
+                st.plotly_chart(fig, use_container_width=True, key="comparison_chart")
+
+                # Comparison table
+                st.subheader("📋 Vorhersage-Vergleich")
+
+                comparison_df = pd.DataFrame({
+                    'Datum': future_dates,
+                    'Prophet': prophet_forecast,
+                    'Linear Regression': lr_forecast,
+                    'Moving Average': ma_forecast
+                })
+
+                # Add statistics
+                comparison_df['Durchschnitt'] = comparison_df[['Prophet', 'Linear Regression', 'Moving Average']].mean(axis=1)
+                comparison_df['Std. Abweichung'] = comparison_df[['Prophet', 'Linear Regression', 'Moving Average']].std(axis=1)
+
+                st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+
+                # Model statistics
+                st.subheader("📊 Modell-Statistiken")
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.markdown("**Prophet**")
+                    st.metric("Ø Vorhersage", f"{prophet_forecast.mean():.2f} µg/m³")
+                    st.metric("Variabilität", f"{prophet_forecast.std():.2f} µg/m³")
+
+                with col2:
+                    st.markdown("**Linear Regression**")
+                    st.metric("Ø Vorhersage", f"{lr_forecast.mean():.2f} µg/m³")
+                    st.metric("Trend", f"{model_lr.coef_[0]:+.3f} µg/m³/Tag")
+
+                with col3:
+                    st.markdown("**Moving Average**")
+                    st.metric("Ø Vorhersage", f"{ma_forecast.mean():.2f} µg/m³")
+                    st.metric("Konstanter Wert", f"{last_ma:.2f} µg/m³")
+
+            except ImportError:
+                st.warning("Prophet nicht installiert. Installiere mit: `pip install prophet`")
+            except Exception as e:
+                st.error(f"Fehler beim Modell-Vergleich: {e}")
 
     def _render_footer(self) -> None:
         """Render dashboard footer."""
