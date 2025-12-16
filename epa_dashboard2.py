@@ -2185,7 +2185,7 @@ WHERE prozent_change > 100
                         changepoint_prior_scale=0.05,
                         interval_width=0.95
                     )
-                    model.fit(prophet_df)
+                    model.fit(prophet_df, show_progress=False)
 
                     # Make predictions
                     future = model.make_future_dataframe(periods=forecast_days)
@@ -2504,7 +2504,7 @@ WHERE prozent_change > 100
                     yearly_seasonality=False
                 )
                 with st.spinner("Vergleiche Modelle..."):
-                    model_prophet.fit(prophet_df)
+                    model_prophet.fit(prophet_df, show_progress=False)
                     future_prophet = model_prophet.make_future_dataframe(periods=forecast_days)
                     forecast_prophet = model_prophet.predict(future_prophet)
                     prophet_forecast = forecast_prophet[forecast_prophet['ds'] > df['date'].max()]['yhat'].values
