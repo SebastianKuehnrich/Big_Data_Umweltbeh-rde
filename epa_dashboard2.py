@@ -2189,9 +2189,16 @@ WHERE prozent_change > 100
                             changepoint_prior_scale=0.05,
                             interval_width=0.95
                         )
-                        model.fit(prophet_df, show_progress=False)
-                    except AttributeError:
-                        # Fallback if stan_backend issue occurs
+                        # Suppress output by redirecting stderr
+                        import sys
+                        import io
+                        old_stderr = sys.stderr
+                        sys.stderr = io.StringIO()
+                        model.fit(prophet_df)
+                        sys.stderr = old_stderr
+                    except (AttributeError, TypeError) as e:
+                        # Fallback if any error occurs
+                        sys.stderr = old_stderr
                         model = Prophet(
                             daily_seasonality=True,
                             weekly_seasonality=True,
@@ -2521,9 +2528,16 @@ WHERE prozent_change > 100
                             weekly_seasonality=True,
                             yearly_seasonality=False
                         )
-                        model_prophet.fit(prophet_df, show_progress=False)
-                    except AttributeError:
-                        # Fallback if stan_backend issue
+                        # Suppress output by redirecting stderr
+                        import sys
+                        import io
+                        old_stderr = sys.stderr
+                        sys.stderr = io.StringIO()
+                        model_prophet.fit(prophet_df)
+                        sys.stderr = old_stderr
+                    except (AttributeError, TypeError) as e:
+                        # Fallback if any error occurs
+                        sys.stderr = old_stderr
                         model_prophet = Prophet()
                         model_prophet.fit(prophet_df)
                     future_prophet = model_prophet.make_future_dataframe(periods=forecast_days)
