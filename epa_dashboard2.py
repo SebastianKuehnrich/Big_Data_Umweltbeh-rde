@@ -400,6 +400,340 @@ class DataLoader:
         except:
             return pd.DataFrame()
 
+    # =========================================================================
+    # ADVANCED ANALYTICS QUERIES (Homework Tag14)
+    # =========================================================================
+
+    @st.cache_data(ttl=3600)
+    def get_alarm_days(_self, filter_state: FilterState) -> pd.DataFrame:
+        """Query 1: Find days with >100% PM2.5 increase using LAG window function."""
+        where_conditions = []
+        if filter_state.selected_states and "All States" not in filter_state.selected_states:
+            state_list = "', '".join(filter_state.selected_states)
+            where_conditions.append(f'"{COLUMN_NAMES["STATE"]}" IN (\'{state_list}\')')
+
+        base_where = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
+
+        query = f"""
+        WITH daily_avg AS (
+            SELECT
+                "{COLUMN_NAMES['STATE']}" as state_name,
+                "{COLUMN_NAMES['DATE']}"::DATE as date_local,
+                ROUND(AVG(GREATEST(COALESCE({COLUMN_NAMES['PM25']}, 0), 0)), 2) as pm25
+            FROM '{_self.data_path}'
+            {base_where}
+            GROUP BY "{COLUMN_NAMES['STATE']}", "{COLUMN_NAMES['DATE']}"
+        ),
+        with_yesterday AS (
+            SELECT
+                state_name,
+                date_local,
+                pm25 as heute,
+                LAG(pm25) OVER (
+                    PARTITION BY state_name
+                    ORDER BY date_local
+                ) as gestern
+            FROM daily_avg
+        )
+        SELECT
+            state_name as "State Name",
+            date_local as "Date Local",
+            heute,
+            gestern,
+            ROUND((heute - gestern) / NULLIF(gestern, 0) * 100, 1) as prozent_change,
+            CASE 
+                WHEN (heute - gestern) / NULLIF(gestern, 0) * 100 > 200 THEN 'KRITISCH'
+                WHEN (heute - gestern) / NULLIF(gestern, 0) * 100 > 100 THEN 'WARNUNG'
+                ELSE 'Normal' 
+            END as alarm_level
+        FROM with_yesterday
+        WHERE gestern > 0
+          AND gestern IS NOT NULL
+          AND (heute - gestern) / NULLIF(gestern, 0) * 100 > 100
+        ORDER BY prozent_change DESC
+        LIMIT 100
+        """
+
+        try:
+            return _self.connection.execute(query).fetchdf()
+        except Exception as e:
+            st.error(f"Failed to get alarm days: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_state_quarterly_trend(_self) -> pd.DataFrame:
+        """Query 2: Compare Q1 vs Q4 to find improvement/worsening states."""
+        query = f"""
+        WITH quarterly_data AS (
+            SELECT
+                "{COLUMN_NAMES['STATE']}" as state_name,
+                CASE 
+                    WHEN MONTH("{COLUMN_NAMES['DATE']}"::DATE) <= 3 THEN 'Q1'
+                    WHEN MONTH("{COLUMN_NAMES['DATE']}"::DATE) <= 6 THEN 'Q2'
+                    WHEN MONTH("{COLUMN_NAMES['DATE']}"::DATE) <= 9 THEN 'Q3'
+                    ELSE 'Q4'
+                END as quartal,
+                ROUND(AVG(GREATEST(COALESCE({COLUMN_NAMES['PM25']}, 0), 0)), 2) as avg_pm25
+            FROM '{_self.data_path}'
+            GROUP BY "{COLUMN_NAMES['STATE']}", quartal
+        ),
+        q1_q4_comparison AS (
+            SELECT
+                state_name,
+                MAX(CASE WHEN quartal = 'Q1' THEN avg_pm25 END) as q1_avg,
+                MAX(CASE WHEN quartal = 'Q4' THEN avg_pm25 END) as q4_avg
+            FROM quarterly_data
+            GROUP BY state_name
+            HAVING q1_avg IS NOT NULL AND q4_avg IS NOT NULL
+        )
+        SELECT
+            state_name as "State Name",
+            q1_avg,
+            q4_avg,
+            ROUND(q4_avg - q1_avg, 2) as diff,
+            ROUND((q4_avg - q1_avg) / NULLIF(q1_avg, 0) * 100, 1) as prozent_change,
+            RANK() OVER (ORDER BY (q4_avg - q1_avg) ASC) as improvement_rank,
+            CASE 
+                WHEN q4_avg < q1_avg - 1 THEN 'Verbessert'
+                WHEN q4_avg > q1_avg + 1 THEN 'Verschlechtert'
+                ELSE 'Stabil'
+            END as kategorie
+        FROM q1_q4_comparison
+        ORDER BY diff ASC
+        """
+
+        try:
+            return _self.connection.execute(query).fetchdf()
+        except Exception as e:
+            st.error(f"Failed to get state trend: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_worst_days_per_state(_self, filter_state: FilterState) -> pd.DataFrame:
+        """Query 3: Top 3 worst days per state using ROW_NUMBER."""
+        where_conditions = []
+        if filter_state.selected_states and "All States" not in filter_state.selected_states:
+            state_list = "', '".join(filter_state.selected_states)
+            where_conditions.append(f'"{COLUMN_NAMES["STATE"]}" IN (\'{state_list}\')')
+
+        base_where = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
+
+        query = f"""
+        WITH daily_ranked AS (
+            SELECT
+                "{COLUMN_NAMES['STATE']}" as state_name,
+                "{COLUMN_NAMES['DATE']}"::DATE as date_local,
+                ROUND(AVG(GREATEST(COALESCE({COLUMN_NAMES['PM25']}, 0), 0)), 2) as pm25,
+                ROW_NUMBER() OVER (
+                    PARTITION BY "{COLUMN_NAMES['STATE']}" 
+                    ORDER BY AVG(GREATEST(COALESCE({COLUMN_NAMES['PM25']}, 0), 0)) DESC
+                ) as rang,
+                LAG(ROUND(AVG(GREATEST(COALESCE({COLUMN_NAMES['PM25']}, 0), 0)), 2)) OVER (
+                    PARTITION BY "{COLUMN_NAMES['STATE']}" 
+                    ORDER BY "{COLUMN_NAMES['DATE']}"::DATE
+                ) as vortag
+            FROM '{_self.data_path}'
+            {base_where}
+            GROUP BY "{COLUMN_NAMES['STATE']}", "{COLUMN_NAMES['DATE']}"
+        ),
+        with_us_avg AS (
+            SELECT 
+                *,
+                (SELECT ROUND(AVG(pm25), 2) FROM daily_ranked) as us_avg
+            FROM daily_ranked
+        )
+        SELECT
+            state_name as "State Name",
+            date_local as "Date Local",
+            pm25,
+            rang,
+            vortag,
+            ROUND(pm25 - COALESCE(vortag, pm25), 2) as sprung,
+            ROUND(pm25 - us_avg, 2) as ueber_durchschnitt,
+            CASE WHEN pm25 - COALESCE(vortag, pm25) > 20 THEN 'Plötzlich' ELSE 'Normal' END as sprung_typ
+        FROM with_us_avg
+        WHERE rang <= 3
+        ORDER BY state_name, rang
+        """
+
+        try:
+            return _self.connection.execute(query).fetchdf()
+        except Exception as e:
+            st.error(f"Failed to get worst days: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_rolling_average(_self, state: str) -> pd.DataFrame:
+        """Query 4: 7-day rolling average with trend indicator."""
+        query = f"""
+        WITH daily_avg AS (
+            SELECT
+                "{COLUMN_NAMES['DATE']}"::DATE as date_local,
+                ROUND(AVG(GREATEST(COALESCE({COLUMN_NAMES['PM25']}, 0), 0)), 2) as pm25
+            FROM '{_self.data_path}'
+            WHERE "{COLUMN_NAMES['STATE']}" = '{state}'
+            GROUP BY "{COLUMN_NAMES['DATE']}"
+        )
+        SELECT
+            date_local as "Date Local",
+            pm25 as daily_pm25,
+            ROUND(AVG(pm25) OVER (
+                ORDER BY date_local
+                ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+            ), 2) as rolling_7day,
+            CASE 
+                WHEN pm25 > AVG(pm25) OVER (ORDER BY date_local ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) 
+                THEN 'Über Trend' 
+                ELSE 'Unter Trend' 
+            END as trend_position
+        FROM daily_avg
+        ORDER BY date_local
+        """
+
+        try:
+            return _self.connection.execute(query).fetchdf()
+        except Exception as e:
+            st.error(f"Failed to get rolling average: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_weekday_analysis(_self) -> pd.DataFrame:
+        """Bonus Challenge 1: Weekday air quality analysis."""
+        query = f"""
+        SELECT
+            DAYOFWEEK("{COLUMN_NAMES['DATE']}"::DATE) as day_num,
+            CASE DAYOFWEEK("{COLUMN_NAMES['DATE']}"::DATE)
+                WHEN 0 THEN 'Sonntag'
+                WHEN 1 THEN 'Montag'
+                WHEN 2 THEN 'Dienstag'
+                WHEN 3 THEN 'Mittwoch'
+                WHEN 4 THEN 'Donnerstag'
+                WHEN 5 THEN 'Freitag'
+                WHEN 6 THEN 'Samstag'
+            END as wochentag,
+            COUNT(*) as messungen,
+            ROUND(AVG({COLUMN_NAMES['PM25']}), 2) as avg_pm25,
+            ROUND(AVG({COLUMN_NAMES['AQI']}), 1) as avg_aqi,
+            ROUND(STDDEV({COLUMN_NAMES['PM25']}), 2) as std_pm25
+        FROM '{_self.data_path}'
+        GROUP BY day_num, wochentag
+        ORDER BY day_num
+        """
+
+        try:
+            return _self.connection.execute(query).fetchdf()
+        except Exception as e:
+            st.error(f"Failed to get weekday analysis: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_good_air_streaks(_self, top_n: int = 10) -> pd.DataFrame:
+        """Bonus Challenge 2: Find longest streaks of good air quality (PM2.5 < 12)."""
+        query = f"""
+        WITH daily_status AS (
+            SELECT
+                "{COLUMN_NAMES['STATE']}" as state_name,
+                "{COLUMN_NAMES['DATE']}"::DATE as date_local,
+                ROUND(AVG({COLUMN_NAMES['PM25']}), 2) as pm25,
+                CASE WHEN AVG({COLUMN_NAMES['PM25']}) < 12 THEN 1 ELSE 0 END as is_good
+            FROM '{_self.data_path}'
+            GROUP BY "{COLUMN_NAMES['STATE']}", "{COLUMN_NAMES['DATE']}"
+        ),
+        streak_groups AS (
+            SELECT
+                state_name,
+                date_local,
+                pm25,
+                is_good,
+                date_local - INTERVAL (ROW_NUMBER() OVER (
+                    PARTITION BY state_name, is_good 
+                    ORDER BY date_local
+                )) DAY as streak_group
+            FROM daily_status
+        ),
+        streak_lengths AS (
+            SELECT
+                state_name,
+                MIN(date_local) as streak_start,
+                MAX(date_local) as streak_end,
+                COUNT(*) as streak_length,
+                is_good
+            FROM streak_groups
+            WHERE is_good = 1
+            GROUP BY state_name, streak_group, is_good
+        )
+        SELECT
+            state_name as "State Name",
+            streak_start as "Streak Start",
+            streak_end as "Streak End",
+            streak_length as "Tage",
+            RANK() OVER (PARTITION BY state_name ORDER BY streak_length DESC) as state_rank
+        FROM streak_lengths
+        QUALIFY state_rank = 1
+        ORDER BY streak_length DESC
+        LIMIT {top_n}
+        """
+
+        try:
+            return _self.connection.execute(query).fetchdf()
+        except Exception as e:
+            st.error(f"Failed to get good air streaks: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_anomaly_scores(_self, filter_state: FilterState) -> pd.DataFrame:
+        """Bonus Challenge 3: Calculate z-score anomaly for each day."""
+        where_conditions = []
+        if filter_state.selected_states and "All States" not in filter_state.selected_states:
+            state_list = "', '".join(filter_state.selected_states)
+            where_conditions.append(f'"{COLUMN_NAMES["STATE"]}" IN (\'{state_list}\')')
+
+        base_where = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
+
+        query = f"""
+        WITH daily_data AS (
+            SELECT
+                "{COLUMN_NAMES['STATE']}" as state_name,
+                "{COLUMN_NAMES['DATE']}"::DATE as date_local,
+                ROUND(AVG({COLUMN_NAMES['PM25']}), 2) as pm25
+            FROM '{_self.data_path}'
+            {base_where}
+            GROUP BY "{COLUMN_NAMES['STATE']}", "{COLUMN_NAMES['DATE']}"
+        ),
+        with_stats AS (
+            SELECT
+                state_name,
+                date_local,
+                pm25,
+                AVG(pm25) OVER (PARTITION BY state_name) as state_avg,
+                STDDEV(pm25) OVER (PARTITION BY state_name) as state_stddev
+            FROM daily_data
+        )
+        SELECT
+            state_name as "State Name",
+            date_local as "Date Local",
+            pm25,
+            ROUND(state_avg, 2) as state_avg,
+            ROUND(state_stddev, 2) as state_stddev,
+            ROUND((pm25 - state_avg) / NULLIF(state_stddev, 0), 2) as z_score,
+            CASE 
+                WHEN ABS((pm25 - state_avg) / NULLIF(state_stddev, 0)) > 3 THEN 'Extreme Anomalie'
+                WHEN ABS((pm25 - state_avg) / NULLIF(state_stddev, 0)) > 2 THEN 'Starke Anomalie'
+                WHEN ABS((pm25 - state_avg) / NULLIF(state_stddev, 0)) > 1.5 THEN 'Leichte Anomalie'
+                ELSE 'Normal'
+            END as anomaly_level
+        FROM with_stats
+        WHERE state_stddev > 0
+        ORDER BY ABS((pm25 - state_avg) / NULLIF(state_stddev, 0)) DESC
+        LIMIT 100
+        """
+
+        try:
+            return _self.connection.execute(query).fetchdf()
+        except Exception as e:
+            st.error(f"Failed to get anomaly scores: {e}")
+            return pd.DataFrame()
+
     @st.cache_data(ttl=3600)
     def get_site_analysis(_self, filter_state: FilterState) -> pd.DataFrame:
         """Get analysis by monitoring sites."""
@@ -685,7 +1019,7 @@ class EPADashboard:
         """Run the dashboard application."""
         # Configure page
         st.set_page_config(
-            page_title="EPA Air Quality Dashboard v2.0",
+            page_title="EPA Air Quality Dashboard v2.1 - Advanced Analytics",
             page_icon="🌬️",
             layout="wide",
             initial_sidebar_state="expanded"
@@ -831,8 +1165,8 @@ class EPADashboard:
         """Render dashboard header."""
         col1, col2, col3 = st.columns([1, 3, 1])
         with col2:
-            st.title("🌬️ EPA Air Quality Dashboard v2.0")
-            st.caption(f"Professional Edition | Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            st.title("🌬️ EPA Air Quality Dashboard v2.1")
+            st.caption(f"Professional Edition with Advanced Analytics | Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
     def _render_sidebar(self) -> None:
         """Render sidebar with filters."""
@@ -926,18 +1260,26 @@ class EPADashboard:
         - Anomaly detection
         - Site location mapping
         - Data quality monitoring
+        
+        **🔥 NEW - Advanced Analytics:**
+        - LAG Window Functions
+        - ROW_NUMBER Rankings
+        - Rolling Averages
+        - Quartals-Vergleiche
+        - Z-Score Anomalien
         """)
 
     def _render_main_content(self) -> None:
         """Render main dashboard content."""
         # Tab navigation
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📊 Overview",
             "📈 Detailed Analysis",
             "🏭 State Comparison",
             "📍 Site Analysis",
             "📉 Data Quality",
-            "🔍 Raw Data Explorer"
+            "🔍 Raw Data Explorer",
+            "🔥 Advanced Analytics"
         ])
 
         with tab1:
@@ -957,6 +1299,9 @@ class EPADashboard:
 
         with tab6:
             self._render_explorer_tab()
+
+        with tab7:
+            self._render_advanced_analytics_tab()
 
     def _render_overview_tab(self) -> None:
         """Render overview tab."""
@@ -1243,13 +1588,480 @@ class EPADashboard:
         else:
             st.warning("No data available")
 
+    def _render_advanced_analytics_tab(self) -> None:
+        """Render advanced analytics tab with Window Functions (Tag14 Homework)."""
+        st.header("🔥 Advanced Analytics - Window Functions")
+        st.markdown("**LAG | ROW_NUMBER | Rolling Windows | Subqueries**")
+
+        # Sub-tabs for different analyses
+        analysis_tab1, analysis_tab2, analysis_tab3, analysis_tab4, analysis_tab5 = st.tabs([
+            "🚨 Alarm-Tage",
+            "📊 Quartals-Trend",
+            "🏆 Worst Days",
+            "📈 Rolling Average",
+            "🎯 Bonus Challenges"
+        ])
+
+        # =====================================================================
+        # TAB 1: ALARM-TAGE (LAG Window Function)
+        # =====================================================================
+        with analysis_tab1:
+            st.subheader("🚨 Alarm-Tage: PM2.5 Anstiege >100%")
+            st.markdown("""
+            **Business Frage:** An welchen Tagen ist PM2.5 um mehr als 100% gestiegen?
+            
+            Diese Analyse nutzt die `LAG()` Window Function um den Vortageswert zu holen
+            und prozentuale Veränderungen zu berechnen.
+            """)
+
+            alarm_df = self.data_loader.get_alarm_days(st.session_state.filter_state)
+
+            if not alarm_df.empty:
+                # KPI Row
+                col1, col2, col3, col4 = st.columns(4)
+
+                kritisch_count = len(alarm_df[alarm_df['alarm_level'] == 'KRITISCH'])
+                warnung_count = len(alarm_df[alarm_df['alarm_level'] == 'WARNUNG'])
+                max_sprung = alarm_df['prozent_change'].max() if 'prozent_change' in alarm_df.columns else 0
+                affected_states = alarm_df['State Name'].nunique()
+
+                with col1:
+                    st.metric(
+                        label="🔴 KRITISCH (>200%)",
+                        value=kritisch_count,
+                        delta="Tage" if kritisch_count > 0 else None,
+                        delta_color="inverse"
+                    )
+
+                with col2:
+                    st.metric(
+                        label="🟡 WARNUNG (>100%)",
+                        value=warnung_count,
+                        delta="Tage",
+                        delta_color="inverse"
+                    )
+
+                with col3:
+                    st.metric(
+                        label="📈 Max Anstieg",
+                        value=f"{max_sprung:.1f}%",
+                        delta="Größter Sprung"
+                    )
+
+                with col4:
+                    st.metric(
+                        label="🗺️ Betroffene Staaten",
+                        value=affected_states
+                    )
+
+                # Filter by alarm level
+                st.markdown("---")
+                alarm_filter = st.multiselect(
+                    "Filter nach Alarm-Level:",
+                    options=['KRITISCH', 'WARNUNG'],
+                    default=['KRITISCH', 'WARNUNG'],
+                    key="alarm_filter"
+                )
+
+                filtered_alarm = alarm_df[alarm_df['alarm_level'].isin(alarm_filter)]
+
+                # Display Table
+                st.dataframe(
+                    filtered_alarm,
+                    column_config={
+                        "State Name": st.column_config.TextColumn("🗺️ Staat"),
+                        "Date Local": st.column_config.DateColumn("📅 Datum"),
+                        "heute": st.column_config.NumberColumn("Heute (µg/m³)", format="%.2f"),
+                        "gestern": st.column_config.NumberColumn("Gestern (µg/m³)", format="%.2f"),
+                        "prozent_change": st.column_config.NumberColumn(
+                            "📈 Anstieg %",
+                            format="%.1f%%",
+                            help="Prozentuale Veränderung zum Vortag"
+                        ),
+                        "alarm_level": st.column_config.TextColumn("⚠️ Level")
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # Visualization
+                if len(filtered_alarm) > 0:
+                    fig = px.bar(
+                        filtered_alarm.head(20),
+                        x='State Name',
+                        y='prozent_change',
+                        color='alarm_level',
+                        color_discrete_map={'KRITISCH': '#ff4444', 'WARNUNG': '#ffaa00'},
+                        title='Top 20 Alarm-Tage nach Anstieg %',
+                        labels={'prozent_change': 'Anstieg (%)', 'State Name': 'Staat'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True, key="alarm_chart")
+            else:
+                st.info("Keine Alarm-Tage mit >100% Anstieg gefunden.")
+
+            # Show SQL Query
+            with st.expander("📝 SQL Query anzeigen"):
+                st.code("""
+WITH daily_avg AS (
+    SELECT "State Name", "Date Local",
+           AVG(pm25_cleaned) as pm25
+    FROM data GROUP BY "State Name", "Date Local"
+),
+with_yesterday AS (
+    SELECT *, 
+           LAG(pm25) OVER (
+               PARTITION BY "State Name" ORDER BY "Date Local"
+           ) as gestern
+    FROM daily_avg
+)
+SELECT *, 
+       (heute - gestern) / gestern * 100 as prozent_change,
+       CASE WHEN prozent > 200 THEN 'KRITISCH'
+            WHEN prozent > 100 THEN 'WARNUNG'
+       END as alarm_level
+FROM with_yesterday
+WHERE prozent_change > 100
+                """, language="sql")
+
+        # =====================================================================
+        # TAB 2: QUARTALS-TREND (Q1 vs Q4)
+        # =====================================================================
+        with analysis_tab2:
+            st.subheader("📊 Quartals-Trend: Q1 vs Q4 Vergleich")
+            st.markdown("""
+            **Business Frage:** Welche Staaten haben sich über das Jahr verbessert oder verschlechtert?
+            
+            Vergleicht den Durchschnitt von Q1 (Jan-März) mit Q4 (Okt-Dez).
+            """)
+
+            trend_df = self.data_loader.get_state_quarterly_trend()
+
+            if not trend_df.empty:
+                # Summary KPIs
+                col1, col2, col3 = st.columns(3)
+
+                verbessert = len(trend_df[trend_df['kategorie'] == 'Verbessert'])
+                verschlechtert = len(trend_df[trend_df['kategorie'] == 'Verschlechtert'])
+                stabil = len(trend_df[trend_df['kategorie'] == 'Stabil'])
+
+                with col1:
+                    st.metric("✅ Verbessert", verbessert, delta="Staaten", delta_color="normal")
+
+                with col2:
+                    st.metric("❌ Verschlechtert", verschlechtert, delta="Staaten", delta_color="inverse")
+
+                with col3:
+                    st.metric("➖ Stabil", stabil, delta="Staaten")
+
+                st.markdown("---")
+
+                # Dual view
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    # Bar chart Q1 vs Q4
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        name='Q1 (Jan-März)',
+                        x=trend_df['State Name'].head(15),
+                        y=trend_df['q1_avg'].head(15),
+                        marker_color='#3498db'
+                    ))
+                    fig.add_trace(go.Bar(
+                        name='Q4 (Okt-Dez)',
+                        x=trend_df['State Name'].head(15),
+                        y=trend_df['q4_avg'].head(15),
+                        marker_color='#e74c3c'
+                    ))
+                    fig.update_layout(
+                        title='Q1 vs Q4 PM2.5 Durchschnitt (Top 15 Staaten)',
+                        barmode='group',
+                        xaxis_title='Staat',
+                        yaxis_title='PM2.5 (µg/m³)',
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True, key="q1q4_chart")
+
+                with col2:
+                    st.subheader("🏆 Top Verbesserungen")
+                    improved = trend_df[trend_df['kategorie'] == 'Verbessert'].head(5)
+                    for _, row in improved.iterrows():
+                        st.write(f"✅ **{row['State Name']}**: {row['prozent_change']:.1f}%")
+
+                    st.subheader("📉 Top Verschlechterungen")
+                    worsened = trend_df[trend_df['kategorie'] == 'Verschlechtert'].tail(5)
+                    for _, row in worsened.iterrows():
+                        st.write(f"❌ **{row['State Name']}**: +{abs(row['prozent_change']):.1f}%")
+
+                # Full table
+                with st.expander("📋 Alle Staaten anzeigen"):
+                    st.dataframe(
+                        trend_df,
+                        column_config={
+                            "State Name": "Staat",
+                            "q1_avg": st.column_config.NumberColumn("Q1 Avg", format="%.2f"),
+                            "q4_avg": st.column_config.NumberColumn("Q4 Avg", format="%.2f"),
+                            "diff": st.column_config.NumberColumn("Differenz", format="%.2f"),
+                            "prozent_change": st.column_config.NumberColumn("% Änderung", format="%.1f%%"),
+                            "improvement_rank": "Rang",
+                            "kategorie": "Status"
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+            else:
+                st.warning("Keine Quartals-Daten verfügbar.")
+
+        # =====================================================================
+        # TAB 3: WORST DAYS PER STATE (ROW_NUMBER)
+        # =====================================================================
+        with analysis_tab3:
+            st.subheader("🏆 Top 3 Schlechteste Tage pro Staat")
+            st.markdown("""
+            **Business Frage:** Welche waren die 3 schlimmsten Luftqualitäts-Tage in jedem Staat?
+            
+            Nutzt `ROW_NUMBER()` für das Ranking und `LAG()` für Vortagesvergleich.
+            """)
+
+            worst_df = self.data_loader.get_worst_days_per_state(st.session_state.filter_state)
+
+            if not worst_df.empty:
+                # Summary
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    max_pm25 = worst_df['pm25'].max()
+                    max_state = worst_df.loc[worst_df['pm25'].idxmax(), 'State Name']
+                    st.metric("📈 Höchster PM2.5 Wert", f"{max_pm25:.2f} µg/m³", delta=max_state)
+
+                with col2:
+                    sudden_jumps = len(worst_df[worst_df['sprung_typ'] == 'Plötzlich'])
+                    st.metric("⚡ Plötzliche Sprünge", sudden_jumps, delta=">20 µg/m³")
+
+                with col3:
+                    avg_over = worst_df['ueber_durchschnitt'].mean()
+                    st.metric("📊 Ø über US-Schnitt", f"{avg_over:.2f} µg/m³")
+
+                # Table
+                st.dataframe(
+                    worst_df,
+                    column_config={
+                        "State Name": "🗺️ Staat",
+                        "Date Local": st.column_config.DateColumn("📅 Datum"),
+                        "pm25": st.column_config.NumberColumn("PM2.5", format="%.2f"),
+                        "rang": "Rang",
+                        "vortag": st.column_config.NumberColumn("Vortag", format="%.2f"),
+                        "sprung": st.column_config.NumberColumn("Sprung", format="%.2f"),
+                        "ueber_durchschnitt": st.column_config.NumberColumn("Über Ø", format="%.2f"),
+                        "sprung_typ": "⚡ Typ"
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # Visualization
+                fig = px.scatter(
+                    worst_df,
+                    x='State Name',
+                    y='pm25',
+                    size='pm25',
+                    color='sprung_typ',
+                    color_discrete_map={'Plötzlich': '#e74c3c', 'Normal': '#3498db'},
+                    title='Top 3 Schlechteste Tage pro Staat',
+                    labels={'pm25': 'PM2.5 (µg/m³)', 'State Name': 'Staat'}
+                )
+                st.plotly_chart(fig, use_container_width=True, key="worst_scatter")
+            else:
+                st.warning("Keine Daten verfügbar.")
+
+        # =====================================================================
+        # TAB 4: ROLLING AVERAGE (Window Frame)
+        # =====================================================================
+        with analysis_tab4:
+            st.subheader("📈 7-Tage Rolling Average")
+            st.markdown("""
+            **Business Frage:** Wie sieht der geglättete Trend aus (ohne tägliches Rauschen)?
+            
+            Nutzt `ROWS BETWEEN 6 PRECEDING AND CURRENT ROW` für den gleitenden Durchschnitt.
+            """)
+
+            # State selector for rolling average
+            states_list = self.data_loader.get_states_list()
+            if states_list:
+                selected_state_rolling = st.selectbox(
+                    "🗺️ Staat für Rolling Average wählen:",
+                    options=states_list,
+                    index=0,
+                    key="rolling_state"
+                )
+
+                rolling_df = self.data_loader.get_rolling_average(selected_state_rolling)
+
+                if not rolling_df.empty:
+                    # Create dual-line chart
+                    fig = go.Figure()
+
+                    fig.add_trace(go.Scatter(
+                        x=rolling_df['Date Local'],
+                        y=rolling_df['daily_pm25'],
+                        mode='lines',
+                        name='Täglicher Wert',
+                        line=dict(color='rgba(52, 152, 219, 0.5)', width=1),
+                        fill='tozeroy',
+                        fillcolor='rgba(52, 152, 219, 0.1)'
+                    ))
+
+                    fig.add_trace(go.Scatter(
+                        x=rolling_df['Date Local'],
+                        y=rolling_df['rolling_7day'],
+                        mode='lines',
+                        name='7-Tage Rolling Avg',
+                        line=dict(color='#e74c3c', width=3)
+                    ))
+
+                    fig.update_layout(
+                        title=f'PM2.5 Trend für {selected_state_rolling}',
+                        xaxis_title='Datum',
+                        yaxis_title='PM2.5 (µg/m³)',
+                        height=450,
+                        hovermode='x unified'
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True, key="rolling_chart")
+
+                    # Statistics
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    with col1:
+                        st.metric("📊 Ø Täglicher Wert", f"{rolling_df['daily_pm25'].mean():.2f}")
+
+                    with col2:
+                        st.metric("📈 Max Rolling Avg", f"{rolling_df['rolling_7day'].max():.2f}")
+
+                    with col3:
+                        above_trend = len(rolling_df[rolling_df['trend_position'] == 'Über Trend'])
+                        st.metric("⬆️ Tage über Trend", above_trend)
+
+                    with col4:
+                        below_trend = len(rolling_df[rolling_df['trend_position'] == 'Unter Trend'])
+                        st.metric("⬇️ Tage unter Trend", below_trend)
+                else:
+                    st.warning(f"Keine Daten für {selected_state_rolling} verfügbar.")
+            else:
+                st.warning("Keine Staaten gefunden.")
+
+        # =====================================================================
+        # TAB 5: BONUS CHALLENGES
+        # =====================================================================
+        with analysis_tab5:
+            st.subheader("🎯 Bonus Challenges")
+
+            bonus_tab1, bonus_tab2, bonus_tab3 = st.tabs([
+                "📅 Wochentag-Analyse",
+                "🏃 Good Air Streaks",
+                "📊 Anomaly Scores"
+            ])
+
+            # Bonus 1: Weekday Analysis
+            with bonus_tab1:
+                st.markdown("**Challenge 1:** An welchen Wochentagen ist die Luft am schlechtesten?")
+
+                weekday_df = self.data_loader.get_weekday_analysis()
+
+                if not weekday_df.empty:
+                    fig = px.bar(
+                        weekday_df,
+                        x='wochentag',
+                        y='avg_pm25',
+                        color='avg_pm25',
+                        color_continuous_scale='RdYlGn_r',
+                        title='Durchschnittlicher PM2.5 nach Wochentag',
+                        labels={'avg_pm25': 'PM2.5 (µg/m³)', 'wochentag': 'Wochentag'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True, key="weekday_chart")
+
+                    # Table
+                    st.dataframe(weekday_df, use_container_width=True, hide_index=True)
+
+            # Bonus 2: Good Air Streaks
+            with bonus_tab2:
+                st.markdown("**Challenge 2:** Längste Serie von 'Good Air Quality' Tagen (PM2.5 < 12)")
+
+                streak_df = self.data_loader.get_good_air_streaks(top_n=15)
+
+                if not streak_df.empty:
+                    fig = px.bar(
+                        streak_df,
+                        x='State Name',
+                        y='Tage',
+                        color='Tage',
+                        color_continuous_scale='Greens',
+                        title='Längste Serien guter Luftqualität pro Staat',
+                        labels={'Tage': 'Anzahl Tage'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True, key="streak_chart")
+
+                    st.dataframe(streak_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Keine Streak-Daten verfügbar.")
+
+            # Bonus 3: Anomaly Scores
+            with bonus_tab3:
+                st.markdown("**Challenge 3:** Z-Score Anomalie-Erkennung")
+
+                anomaly_df = self.data_loader.get_anomaly_scores(st.session_state.filter_state)
+
+                if not anomaly_df.empty:
+                    # Filter
+                    anomaly_filter = st.multiselect(
+                        "Anomalie-Level filtern:",
+                        options=['Extreme Anomalie', 'Starke Anomalie', 'Leichte Anomalie', 'Normal'],
+                        default=['Extreme Anomalie', 'Starke Anomalie'],
+                        key="anomaly_level_filter"
+                    )
+
+                    filtered_anomaly = anomaly_df[anomaly_df['anomaly_level'].isin(anomaly_filter)]
+
+                    fig = px.scatter(
+                        filtered_anomaly.head(50),
+                        x='Date Local',
+                        y='z_score',
+                        color='anomaly_level',
+                        size=abs(filtered_anomaly.head(50)['z_score']),
+                        hover_data=['State Name', 'pm25', 'state_avg'],
+                        title='Z-Score Anomalien',
+                        labels={'z_score': 'Z-Score', 'Date Local': 'Datum'}
+                    )
+                    fig.add_hline(y=2, line_dash="dash", line_color="orange", annotation_text="2σ")
+                    fig.add_hline(y=3, line_dash="dash", line_color="red", annotation_text="3σ")
+                    fig.add_hline(y=-2, line_dash="dash", line_color="orange")
+                    fig.add_hline(y=-3, line_dash="dash", line_color="red")
+                    st.plotly_chart(fig, use_container_width=True, key="anomaly_scatter")
+
+                    st.dataframe(
+                        filtered_anomaly,
+                        column_config={
+                            "State Name": "Staat",
+                            "Date Local": st.column_config.DateColumn("Datum"),
+                            "pm25": st.column_config.NumberColumn("PM2.5", format="%.2f"),
+                            "state_avg": st.column_config.NumberColumn("Staats-Ø", format="%.2f"),
+                            "z_score": st.column_config.NumberColumn("Z-Score", format="%.2f"),
+                            "anomaly_level": "Level"
+                        },
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("Keine Anomalie-Daten verfügbar.")
+
     def _render_footer(self) -> None:
         """Render dashboard footer."""
         st.markdown("---")
         st.markdown(
             f"""
             <div style='text-align: center; color: gray;'>
-                <p>📊 EPA Air Quality Dashboard v2.0 | Built with Streamlit, DuckDB & Plotly</p>
+                <p>📊 EPA Air Quality Dashboard v2.1 | Built with Streamlit, DuckDB & Plotly</p>
+                <p>🔥 Includes Advanced Analytics with Window Functions (Tag14 Homework)</p>
                 <p>© 2024 Sebastian Kühnrich | Professional Edition</p>
                 <p>Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
             </div>
